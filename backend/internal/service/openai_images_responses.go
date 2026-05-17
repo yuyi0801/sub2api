@@ -15,13 +15,13 @@ import (
 )
 
 type openAIResponsesImageResult struct {
-	Result	string
+	Result        string
 	RevisedPrompt string
-	OutputFormat	string
+	OutputFormat  string
 	Size          string
-	Background	string
+	Background    string
 	Quality       string
-	Model	string
+	Model         string
 }
 
 func openAIResponsesImageResultKey(itemID string, result openAIResponsesImageResult) string {
@@ -80,11 +80,11 @@ func extractOpenAIResponsesImageMetaFromLifecycleEvent(payload []byte) (openAIRe
 	}
 
 	meta := openAIResponsesImageResult{
-		OutputFormat:	strings.TrimSpace(response.Get("tools.0.output_format").String()),
-		Size:	strings.TrimSpace(response.Get("tools.0.size").String()),
-		Background:	strings.TrimSpace(response.Get("tools.0.background").String()),
-		Quality:	strings.TrimSpace(response.Get("tools.0.quality").String()),
-		Model:	strings.TrimSpace(response.Get("tools.0.model").String()),
+		OutputFormat: strings.TrimSpace(response.Get("tools.0.output_format").String()),
+		Size:         strings.TrimSpace(response.Get("tools.0.size").String()),
+		Background:   strings.TrimSpace(response.Get("tools.0.background").String()),
+		Quality:      strings.TrimSpace(response.Get("tools.0.quality").String()),
+		Model:        strings.TrimSpace(response.Get("tools.0.model").String()),
 	}
 	return meta, response.Get("created_at").Int(), true
 }
@@ -305,12 +305,12 @@ func extractOpenAIImageFromResponsesOutputItemDone(payload []byte) (openAIRespon
 	}
 
 	entry := openAIResponsesImageResult{
-		Result:	result,
-		RevisedPrompt:	strings.TrimSpace(item.Get("revised_prompt").String()),
-		OutputFormat:	strings.TrimSpace(item.Get("output_format").String()),
-		Size:	strings.TrimSpace(item.Get("size").String()),
-		Background:	strings.TrimSpace(item.Get("background").String()),
-		Quality:	strings.TrimSpace(item.Get("quality").String()),
+		Result:        result,
+		RevisedPrompt: strings.TrimSpace(item.Get("revised_prompt").String()),
+		OutputFormat:  strings.TrimSpace(item.Get("output_format").String()),
+		Size:          strings.TrimSpace(item.Get("size").String()),
+		Background:    strings.TrimSpace(item.Get("background").String()),
+		Quality:       strings.TrimSpace(item.Get("quality").String()),
 	}
 	return entry, strings.TrimSpace(item.Get("id").String()), true, nil
 }
@@ -534,14 +534,14 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		imageCount = parsed.N
 	}
 	return &OpenAIForwardResult{
-		RequestID:	imageResult.RequestID,
-		Usage:	imageResult.Usage,
-		Model:	requestModel,
-		UpstreamModel:	requestModel,
-		Stream:	parsed.Stream,
-		Duration:	time.Since(startTime),
-		ImageCount:	imageCount,
-		ImageSize:	parsed.SizeTier,
-		BillingModel:	openAIChatGPTImageBillingModel,
+		RequestID:     imageResult.RequestID,
+		Usage:         imageResult.Usage,
+		Model:         requestModel,
+		UpstreamModel: requestModel,
+		Stream:        parsed.Stream,
+		Duration:      time.Since(startTime),
+		ImageCount:    imageCount,
+		ImageSize:     parsed.SizeTier,
+		BillingModel:  openAIChatGPTImageBillingModel,
 	}, nil
 }

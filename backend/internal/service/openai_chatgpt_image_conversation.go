@@ -33,43 +33,43 @@ const (
 )
 
 type openAIChatGPTImageConversationRequest struct {
-	Prompt	string
+	Prompt       string
 	MainModel    string
-	ImageModel	string
+	ImageModel   string
 	Size         string
-	Quality	string
+	Quality      string
 	Background   string
-	OutputFormat	string
+	OutputFormat string
 	Uploads      []OpenAIImagesUpload
-	InputURLs	[]string
+	InputURLs    []string
 	Stream       bool
-	ResponseKind	string
+	ResponseKind string
 }
 
 type openAIChatGPTImageConversationResult struct {
-	RequestID	string
+	RequestID    string
 	Conversation string
-	CreatedAt	int64
+	CreatedAt    int64
 	Usage        OpenAIUsage
-	Images	[]openAIResponsesImageResult
+	Images       []openAIResponsesImageResult
 }
 
 type openAIChatGPTImageUploadRef struct {
-	FileID	string
+	FileID   string
 	FileName string
-	FileSize	int
+	FileSize int
 	MimeType string
-	Width	int
+	Width    int
 	Height   int
-	AssetURL	string
+	AssetURL string
 }
 
 type openAIChatGPTImageStageError struct {
-	Stage	string
+	Stage      string
 	StatusCode int
-	Message	string
+	Message    string
 	Body       []byte
-	URL	string
+	URL        string
 	Err        error
 }
 
@@ -230,12 +230,12 @@ func (s *OpenAIGatewayService) openAIChatGPTImageStageRequestError(c *gin.Contex
 	safeErr := sanitizeUpstreamErrorMessage(err.Error())
 	setOpsUpstreamError(c, 0, stage+": "+safeErr, "")
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-		Platform:	account.Platform,
-		AccountID:	account.ID,
-		AccountName:	account.Name,
-		UpstreamURL:	safeUpstreamURL(rawURL),
-		Kind:	"request_error",
-		Message:	stage + ": " + safeErr,
+		Platform:    account.Platform,
+		AccountID:   account.ID,
+		AccountName: account.Name,
+		UpstreamURL: safeUpstreamURL(rawURL),
+		Kind:        "request_error",
+		Message:     stage + ": " + safeErr,
 	})
 	return &openAIChatGPTImageStageError{Stage: stage, URL: rawURL, Message: safeErr, Err: err}
 }
@@ -248,22 +248,22 @@ func (s *OpenAIGatewayService) openAIChatGPTImageStageHTTPError(c *gin.Context, 
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 	setOpsUpstreamError(c, resp.StatusCode, stage+": "+upstreamMsg, truncateString(string(body), 2048))
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-		Platform:	account.Platform,
-		AccountID:	account.ID,
-		AccountName:	account.Name,
-		UpstreamStatusCode:	resp.StatusCode,
-		UpstreamRequestID:	resp.Header.Get("x-request-id"),
-		UpstreamURL:	safeUpstreamURL(rawURL),
-		UpstreamResponseBody:	truncateString(string(body), 2048),
-		Kind:	"http_error",
-		Message:	stage + ": " + upstreamMsg,
+		Platform:             account.Platform,
+		AccountID:            account.ID,
+		AccountName:          account.Name,
+		UpstreamStatusCode:   resp.StatusCode,
+		UpstreamRequestID:    resp.Header.Get("x-request-id"),
+		UpstreamURL:          safeUpstreamURL(rawURL),
+		UpstreamResponseBody: truncateString(string(body), 2048),
+		Kind:                 "http_error",
+		Message:              stage + ": " + upstreamMsg,
 	})
 	return &openAIChatGPTImageStageError{
-		Stage:	stage,
-		StatusCode:	resp.StatusCode,
-		Message:	upstreamMsg,
-		Body:	body,
-		URL:	rawURL,
+		Stage:      stage,
+		StatusCode: resp.StatusCode,
+		Message:    upstreamMsg,
+		Body:       body,
+		URL:        rawURL,
 	}
 }
 
@@ -292,23 +292,23 @@ func (s *OpenAIGatewayService) prepareOpenAIChatGPTImageConversation(
 	req openAIChatGPTImageConversationRequest,
 ) (string, error) {
 	payload := map[string]any{
-		"action":               "next",
+		"action":                "next",
 		"fork_from_shared_post": false,
-		"parent_message_id":    uuid.NewString(),
-		"model":                openAIChatGPTImageModelSlug(req.ImageModel),
-		"client_prepare_state": "success",
-		"timezone_offset_min":  -480,
-		"timezone":             "Asia/Shanghai",
-		"conversation_mode":    map[string]any{"kind": "primary_assistant"},
-		"system_hints":         []string{"picture_v2"},
+		"parent_message_id":     uuid.NewString(),
+		"model":                 openAIChatGPTImageModelSlug(req.ImageModel),
+		"client_prepare_state":  "success",
+		"timezone_offset_min":   -480,
+		"timezone":              "Asia/Shanghai",
+		"conversation_mode":     map[string]any{"kind": "primary_assistant"},
+		"system_hints":          []string{"picture_v2"},
 		"partial_query": map[string]any{
 			"id":      uuid.NewString(),
 			"author":  map[string]any{"role": "user"},
 			"content": map[string]any{"content_type": "text", "parts": []string{req.Prompt}},
 		},
-		"supports_buffering":      true,
-		"supported_encodings":     []string{"v1"},
-		"client_contextual_info":  map[string]any{"app_name": "chatgpt.com"},
+		"supports_buffering":     true,
+		"supported_encodings":    []string{"v1"},
+		"client_contextual_info": map[string]any{"app_name": "chatgpt.com"},
 	}
 	body, _ := json.Marshal(payload)
 	stageHeaders := cloneHTTPHeader(headers)
@@ -401,16 +401,16 @@ func buildOpenAIChatGPTImageConversationPayload(req openAIChatGPTImageConversati
 			"content":     content,
 			"metadata":    metadata,
 		}},
-		"parent_message_id":       uuid.NewString(),
-		"model":                   openAIChatGPTImageModelSlug(req.ImageModel),
-		"client_prepare_state":    "sent",
-		"timezone_offset_min":     -480,
-		"timezone":                "Asia/Shanghai",
-		"conversation_mode":       map[string]any{"kind": "primary_assistant"},
+		"parent_message_id":        uuid.NewString(),
+		"model":                    openAIChatGPTImageModelSlug(req.ImageModel),
+		"client_prepare_state":     "sent",
+		"timezone_offset_min":      -480,
+		"timezone":                 "Asia/Shanghai",
+		"conversation_mode":        map[string]any{"kind": "primary_assistant"},
 		"enable_message_followups": true,
-		"system_hints":            []string{"picture_v2"},
-		"supports_buffering":      true,
-		"supported_encodings":     []string{"v1"},
+		"system_hints":             []string{"picture_v2"},
+		"supports_buffering":       true,
+		"supported_encodings":      []string{"v1"},
 		"client_contextual_info": map[string]any{
 			"is_dark_mode":      false,
 			"time_since_loaded": 1200,
@@ -474,21 +474,21 @@ func (s *OpenAIGatewayService) collectOpenAIChatGPTImageConversationResult(
 			return nil, err
 		}
 		images = append(images, openAIResponsesImageResult{
-			Result:	base64.StdEncoding.EncodeToString(imageBytes),
-			RevisedPrompt:	firstNonEmptyString(pointer.Prompt, req.Prompt),
-			OutputFormat:	req.OutputFormat,
-			Size:	req.Size,
-			Background:	req.Background,
-			Quality:	req.Quality,
-			Model:	openAIChatGPTImageBillingModel,
+			Result:        base64.StdEncoding.EncodeToString(imageBytes),
+			RevisedPrompt: firstNonEmptyString(pointer.Prompt, req.Prompt),
+			OutputFormat:  req.OutputFormat,
+			Size:          req.Size,
+			Background:    req.Background,
+			Quality:       req.Quality,
+			Model:         openAIChatGPTImageBillingModel,
 		})
 	}
 	return &openAIChatGPTImageConversationResult{
-		RequestID:	requestID,
-		Conversation:	conversationID,
-		CreatedAt:	createdAt,
-		Usage:	usage,
-		Images:	images,
+		RequestID:    requestID,
+		Conversation: conversationID,
+		CreatedAt:    createdAt,
+		Usage:        usage,
+		Images:       images,
 	}, nil
 }
 
@@ -799,12 +799,12 @@ func (s *OpenAIGatewayService) uploadOpenAIChatGPTImageReference(
 		height = 1024
 	}
 	return openAIChatGPTImageUploadRef{
-		FileID:	fileID,
-		FileName:	fileName,
-		FileSize:	len(upload.Data),
-		MimeType:	contentType,
-		Width:	width,
-		Height:	height,
+		FileID:   fileID,
+		FileName: fileName,
+		FileSize: len(upload.Data),
+		MimeType: contentType,
+		Width:    width,
+		Height:   height,
 	}, nil
 }
 
@@ -846,9 +846,9 @@ func (s *OpenAIGatewayService) downloadOpenAIChatGPTImageInputURL(
 		contentType = http.DetectContentType(data)
 	}
 	return OpenAIImagesUpload{
-		FileName:	openAIImageFileNameFromURL(imageURL, contentType),
-		ContentType:	contentType,
-		Data:	data,
+		FileName:    openAIImageFileNameFromURL(imageURL, contentType),
+		ContentType: contentType,
+		Data:        data,
 	}, nil
 }
 
@@ -1000,17 +1000,17 @@ func buildOpenAIResponsesImageConversationRequest(reqBody map[string]any, mainMo
 		outputFormat = openAIChatGPTImageOutputFormat
 	}
 	return openAIChatGPTImageConversationRequest{
-		Prompt:	extractOpenAIResponsesImagePrompt(reqBody),
-		MainModel:	mainModel,
-		ImageModel:	imageModel,
-		Size:	strings.TrimSpace(firstNonEmptyString(tool["size"], reqBody["size"])),
-		Quality:	strings.TrimSpace(firstNonEmptyString(tool["quality"], reqBody["quality"])),
-		Background:	strings.TrimSpace(firstNonEmptyString(tool["background"], reqBody["background"])),
-		OutputFormat:	outputFormat,
-		Uploads:	extractOpenAIResponsesImageUploads(reqBody),
-		InputURLs:	extractOpenAIResponsesImageInputURLs(reqBody),
-		Stream:	stream,
-		ResponseKind:	openAIResponsesEndpoint,
+		Prompt:       extractOpenAIResponsesImagePrompt(reqBody),
+		MainModel:    mainModel,
+		ImageModel:   imageModel,
+		Size:         strings.TrimSpace(firstNonEmptyString(tool["size"], reqBody["size"])),
+		Quality:      strings.TrimSpace(firstNonEmptyString(tool["quality"], reqBody["quality"])),
+		Background:   strings.TrimSpace(firstNonEmptyString(tool["background"], reqBody["background"])),
+		OutputFormat: outputFormat,
+		Uploads:      extractOpenAIResponsesImageUploads(reqBody),
+		InputURLs:    extractOpenAIResponsesImageInputURLs(reqBody),
+		Stream:       stream,
+		ResponseKind: openAIResponsesEndpoint,
 	}
 }
 
@@ -1198,17 +1198,17 @@ func buildOpenAIImagesConversationRequest(parsed *OpenAIImagesRequest, imageMode
 		inputURLs = append(inputURLs, parsed.MaskImageURL)
 	}
 	return openAIChatGPTImageConversationRequest{
-		Prompt:	parsed.Prompt,
-		MainModel:	imageModel,
-		ImageModel:	openAIChatGPTImageBillingModel,
-		Size:	parsed.Size,
-		Quality:	parsed.Quality,
-		Background:	parsed.Background,
-		OutputFormat:	outputFormat,
-		Uploads:	uploads,
-		InputURLs:	inputURLs,
-		Stream:	parsed.Stream,
-		ResponseKind:	parsed.Endpoint,
+		Prompt:       parsed.Prompt,
+		MainModel:    imageModel,
+		ImageModel:   openAIChatGPTImageBillingModel,
+		Size:         parsed.Size,
+		Quality:      parsed.Quality,
+		Background:   parsed.Background,
+		OutputFormat: outputFormat,
+		Uploads:      uploads,
+		InputURLs:    inputURLs,
+		Stream:       parsed.Stream,
+		ResponseKind: parsed.Endpoint,
 	}
 }
 
@@ -1248,11 +1248,11 @@ func (s *OpenAIGatewayService) writeOpenAIImagesConversationResult(c *gin.Contex
 		return nil
 	}
 	body, err := buildOpenAIImagesAPIResponse(result.Images, result.CreatedAt, marshalOpenAIUsageJSON(result.Usage), openAIResponsesImageResult{
-		OutputFormat:	req.OutputFormat,
-		Size:	req.Size,
-		Background:	req.Background,
-		Quality:	req.Quality,
-		Model:	model,
+		OutputFormat: req.OutputFormat,
+		Size:         req.Size,
+		Background:   req.Background,
+		Quality:      req.Quality,
+		Model:        model,
 	}, parsed.ResponseFormat)
 	if err != nil {
 		return err
