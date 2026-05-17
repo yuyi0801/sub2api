@@ -640,6 +640,55 @@ func TestEnsureOpenAIResponsesImageGenerationTool_NormalizesExistingImageToolMod
 	require.Equal(t, "webp", tool["output_format"])
 }
 
+func TestNormalizeOpenAIResponsesImageGenerationToolChoice_DowngradesWhenToolMissing(t *testing.T) {
+	reqBody := map[string]any{
+		"model":       "gpt-5.4",
+		"tools":       []any{map[string]any{"type": "web_search"}},
+		"tool_choice": map[string]any{"type": "image_generation"},
+	}
+
+	modified := normalizeOpenAIResponsesImageGenerationToolChoice(reqBody)
+	require.True(t, modified)
+	require.Equal(t, "auto", reqBody["tool_choice"])
+}
+
+func TestNormalizeOpenAIResponsesImageGenerationToolChoice_PreservesWhenToolPresent(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.4",
+		"tools": []any{
+			map[string]any{"type": "image_generation", "model": openAIResponsesImageGenerationToolModel},
+		},
+		"tool_choice": map[string]any{"type": "image_generation"},
+	}
+
+	modified := normalizeOpenAIResponsesImageGenerationToolChoice(reqBody)
+	require.False(t, modified)
+	require.Equal(t, map[string]any{"type": "image_generation"}, reqBody["tool_choice"])
+}
+
+func TestIsOpenAIImageGenerationToolChoiceMissingError(t *testing.T) {
+	require.True(t, isOpenAIImageGenerationToolChoiceMissingError(
+		400,
+		"Tool choice 'image_generation' not found in 'tools' parameter.",
+		nil,
+	))
+	require.True(t, isOpenAIImageGenerationToolChoiceMissingError(
+		400,
+		"",
+		[]byte(`{"error":{"message":"Tool choice 'image_generation' not found in 'tools' parameter."}}`),
+	))
+	require.False(t, isOpenAIImageGenerationToolChoiceMissingError(
+		400,
+		"Tool choice 'web_search' not found in 'tools' parameter.",
+		nil,
+	))
+	require.False(t, isOpenAIImageGenerationToolChoiceMissingError(
+		500,
+		"Tool choice 'image_generation' not found in 'tools' parameter.",
+		nil,
+	))
+}
+
 func TestApplyCodexImageGenerationBridgeInstructions_AppendsBridgeOnce(t *testing.T) {
 	reqBody := map[string]any{
 		"model":        "gpt-5.4",

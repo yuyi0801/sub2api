@@ -301,6 +301,31 @@ func normalizeCodexToolChoice(reqBody map[string]any) bool {
 	return true
 }
 
+func normalizeOpenAIResponsesImageGenerationToolChoice(reqBody map[string]any) bool {
+	if !openAIAnyToolChoiceSelectsImageGeneration(reqBody["tool_choice"]) {
+		return false
+	}
+	if hasOpenAIImageGenerationTool(reqBody) {
+		return false
+	}
+	reqBody["tool_choice"] = "auto"
+	return true
+}
+
+func isOpenAIImageGenerationToolChoiceMissingError(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if statusCode != 400 {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(upstreamMsg))
+	if msg == "" && len(upstreamBody) > 0 {
+		msg = strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(upstreamBody)))
+	}
+	return strings.Contains(msg, "tool choice") &&
+		strings.Contains(msg, "image_generation") &&
+		strings.Contains(msg, "not found") &&
+		strings.Contains(msg, "tools")
+}
+
 func codexToolsContainType(rawTools any, toolType string) bool {
 	tools, ok := rawTools.([]any)
 	if !ok || strings.TrimSpace(toolType) == "" {
