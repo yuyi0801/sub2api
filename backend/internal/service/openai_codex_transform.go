@@ -83,6 +83,8 @@ const (
 	codexSparkImageUnsupportedText   = codexSparkImageUnsupportedMarker + "\nThe current model is gpt-5.3-codex-spark, which does not support image generation, image editing, image input, the `image_generation` tool, or Codex `image_gen`/`$imagegen` workflows. If the user asks for image generation or image editing, clearly explain this model limitation and ask them to switch to a non-Spark Codex model such as gpt-5.3-codex or gpt-5.4. Do not claim that the local environment merely lacks image_gen tooling, and do not suggest CLI fallback as the primary fix while the model remains Spark.\n</sub2api-codex-spark-image-unsupported>"
 )
 
+const openAIResponsesImageGenerationToolModel = "gpt-image-2"
+
 var openAIChatGPTInternalUnsupportedFields = []string{
 	"user",
 	"metadata",
@@ -667,6 +669,33 @@ func normalizeOpenAIResponsesImageGenerationTools(reqBody map[string]any) bool {
 	return modified
 }
 
+func normalizeOpenAICodexResponsesImageGenerationToolModels(reqBody map[string]any) bool {
+	rawTools, ok := reqBody["tools"]
+	if !ok || rawTools == nil {
+		return false
+	}
+	if isCodexSparkModel(firstNonEmptyString(reqBody["model"])) {
+		return false
+	}
+	tools, ok := rawTools.([]any)
+	if !ok {
+		return false
+	}
+
+	modified := false
+	for _, rawTool := range tools {
+		toolMap, ok := rawTool.(map[string]any)
+		if !ok || strings.TrimSpace(firstNonEmptyString(toolMap["type"])) != "image_generation" {
+			continue
+		}
+		if strings.TrimSpace(firstNonEmptyString(toolMap["model"])) != openAIResponsesImageGenerationToolModel {
+			toolMap["model"] = openAIResponsesImageGenerationToolModel
+			modified = true
+		}
+	}
+	return modified
+}
+
 func ensureOpenAIResponsesImageGenerationTool(reqBody map[string]any) bool {
 	if len(reqBody) == 0 {
 		return false
@@ -677,6 +706,7 @@ func ensureOpenAIResponsesImageGenerationTool(reqBody map[string]any) bool {
 
 	tool := map[string]any{
 		"type":          "image_generation",
+		"model":         openAIResponsesImageGenerationToolModel,
 		"output_format": "png",
 	}
 
@@ -697,7 +727,16 @@ func ensureOpenAIResponsesImageGenerationTool(reqBody map[string]any) bool {
 			continue
 		}
 		if strings.TrimSpace(firstNonEmptyString(toolMap["type"])) == "image_generation" {
-			return false
+			modified := false
+			if strings.TrimSpace(firstNonEmptyString(toolMap["model"])) != openAIResponsesImageGenerationToolModel {
+				toolMap["model"] = openAIResponsesImageGenerationToolModel
+				modified = true
+			}
+			if _, ok := toolMap["output_format"]; !ok && strings.TrimSpace(firstNonEmptyString(toolMap["format"])) == "" {
+				toolMap["output_format"] = "png"
+				modified = true
+			}
+			return modified
 		}
 	}
 

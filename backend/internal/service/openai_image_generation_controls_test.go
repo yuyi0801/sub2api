@@ -114,6 +114,10 @@ func TestOpenAIGatewayServiceForward_CodexImageInjectionRespectsGroupCapability(
 			require.NotNil(t, upstream.lastReq)
 			hasImageTool := gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists()
 			require.Equal(t, tt.wantInjected, hasImageTool)
+			if tt.wantInjected {
+				require.Equal(t, openAIResponsesImageGenerationToolModel, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation").model`).String())
+				require.Equal(t, "png", gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation").output_format`).String())
+			}
 			instructions := gjson.GetBytes(upstream.lastBody, "instructions").String()
 			require.Equal(t, tt.wantInjected, strings.Contains(instructions, "image_generation"))
 		})
@@ -133,7 +137,7 @@ func TestOpenAIGatewayServiceForward_ExplicitImageToolWorksWithBridgeDisabled(t 
 	svc := newOpenAIImageGenerationControlTestService(upstream)
 	c, _ := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.98.0")
 	account := newOpenAIImageGenerationControlTestAccount()
-	body := []byte(`{"model":"gpt-5.4","input":"draw","stream":false,"tools":[{"type":"image_generation","format":"jpeg"}]}`)
+	body := []byte(`{"model":"gpt-5.4","input":"draw","stream":false,"tools":[{"type":"image_generation","model":"gpt-image-1.5","format":"jpeg"}],"tool_choice":{"type":"image_generation"}}`)
 
 	result, err := svc.Forward(context.Background(), c, account, body)
 
@@ -141,10 +145,73 @@ func TestOpenAIGatewayServiceForward_ExplicitImageToolWorksWithBridgeDisabled(t 
 	require.NotNil(t, result)
 	require.NotNil(t, upstream.lastReq)
 	require.True(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists())
+	require.Equal(t, openAIResponsesImageGenerationToolModel, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation").model`).String())
 	require.Equal(t, "jpeg", gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation").output_format`).String())
 	require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation").format`).Exists())
+	require.Equal(t, "image_generation", gjson.GetBytes(upstream.lastBody, "tool_choice.type").String())
 	instructions := gjson.GetBytes(upstream.lastBody, "instructions").String()
 	require.NotContains(t, instructions, "image_generation")
+}
+
+func TestOpenAIGatewayServiceForward_CodexImageToolUsesImage2AndPreservesMainModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []string{"gpt-5.4", "gpt-5.4-mini", "gpt-5.5"}
+	for _, model := range tests {
+		t.Run(model, func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{resp: openAICompatSSECompletedResponse("resp_"+strings.ReplaceAll(model, ".", "_"), model)}
+			svc := newOpenAIImageGenerationControlTestService(upstream)
+			c, _ := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.98.0")
+			account := newOpenAIImageGenerationControlTestOAuthAccount()
+			body := []byte(`{"model":"` + model + `","input":"draw","stream":false,"tool_choice":{"type":"image_generation"}}`)
+
+			result, err := svc.Forward(context.Background(), c, account, body)
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.NotNil(t, upstream.lastReq)
+			require.Equal(t, model, gjson.GetBytes(upstream.lastBody, "model").String())
+			require.Equal(t, "image_generation", gjson.GetBytes(upstream.lastBody, "tool_choice.type").String())
+			require.Equal(t, openAIResponsesImageGenerationToolModel, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation").model`).String())
+			require.Equal(t, "png", gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation").output_format`).String())
+		})
+	}
+}
+
+func TestOpenAIGatewayServiceForward_CodexTextRequestDoesNotForceImageTool(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &httpUpstreamRecorder{resp: openAICompatSSECompletedResponse("resp_text_only", "gpt-5.4")}
+	svc := newOpenAIImageGenerationControlTestService(upstream)
+	c, _ := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.98.0")
+	account := newOpenAIImageGenerationControlTestOAuthAccount()
+	body := []byte(`{"model":"gpt-5.4","input":"write code","stream":false}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists())
+}
+
+func TestOpenAIGatewayServiceForward_CodexSparkDoesNotInjectImage2(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &httpUpstreamRecorder{resp: openAICompatSSECompletedResponse("resp_spark", "gpt-5.3-codex-spark")}
+	svc := newOpenAIImageGenerationControlTestService(upstream)
+	svc.cfg.Gateway.CodexImageGenerationBridgeEnabled = true
+	c, _ := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.98.0")
+	account := newOpenAIImageGenerationControlTestOAuthAccount()
+	body := []byte(`{"model":"gpt-5.3-codex-spark","input":"write code","stream":false}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists())
+	require.Contains(t, gjson.GetBytes(upstream.lastBody, "instructions").String(), codexSparkImageUnsupportedMarker)
 }
 
 func TestOpenAIGatewayServiceForward_ChannelBridgeOverrideEnablesCodexInjection(t *testing.T) {
@@ -373,6 +440,22 @@ func newOpenAIImageGenerationControlTestAccount() *Account {
 		Concurrency: 1,
 		Credentials: map[string]any{
 			"api_key": "sk-test",
+		},
+	}
+}
+
+func newOpenAIImageGenerationControlTestOAuthAccount() *Account {
+	return &Account{
+		ID:          6161,
+		Name:        "openai-image-controls-oauth",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-acc",
 		},
 	}
 }

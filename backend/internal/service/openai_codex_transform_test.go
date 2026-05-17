@@ -545,6 +545,26 @@ func TestNormalizeOpenAIResponsesImageGenerationTools_RewritesLegacyFields(t *te
 	require.False(t, hasCompression)
 }
 
+func TestNormalizeOpenAICodexResponsesImageGenerationToolModels_FixesImageToolModel(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.4",
+		"tools": []any{
+			map[string]any{"type": "image_generation", "model": "gpt-image-1.5", "output_format": "webp"},
+			map[string]any{"type": "web_search"},
+		},
+	}
+
+	modified := normalizeOpenAICodexResponsesImageGenerationToolModels(reqBody)
+	require.True(t, modified)
+
+	tools, ok := reqBody["tools"].([]any)
+	require.True(t, ok)
+	tool, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, openAIResponsesImageGenerationToolModel, tool["model"])
+	require.Equal(t, "webp", tool["output_format"])
+}
+
 func TestEnsureOpenAIResponsesImageGenerationTool_NoTools(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
@@ -560,6 +580,7 @@ func TestEnsureOpenAIResponsesImageGenerationTool_NoTools(t *testing.T) {
 	tool, ok := tools[0].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "image_generation", tool["type"])
+	require.Equal(t, openAIResponsesImageGenerationToolModel, tool["model"])
 	require.Equal(t, "png", tool["output_format"])
 }
 
@@ -594,26 +615,28 @@ func TestEnsureOpenAIResponsesImageGenerationTool_AppendsToExistingTools(t *test
 	second, ok := tools[1].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "image_generation", second["type"])
+	require.Equal(t, openAIResponsesImageGenerationToolModel, second["model"])
 	require.Equal(t, "png", second["output_format"])
 }
 
-func TestEnsureOpenAIResponsesImageGenerationTool_PreservesExistingImageTool(t *testing.T) {
+func TestEnsureOpenAIResponsesImageGenerationTool_NormalizesExistingImageToolModel(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.4",
 		"tools": []any{
-			map[string]any{"type": "image_generation", "output_format": "webp"},
+			map[string]any{"type": "image_generation", "model": "gpt-image-1.5", "output_format": "webp"},
 			map[string]any{"type": "web_search"},
 		},
 	}
 
 	modified := ensureOpenAIResponsesImageGenerationTool(reqBody)
-	require.False(t, modified)
+	require.True(t, modified)
 
 	tools, ok := reqBody["tools"].([]any)
 	require.True(t, ok)
 	require.Len(t, tools, 2)
 	tool, ok := tools[0].(map[string]any)
 	require.True(t, ok)
+	require.Equal(t, openAIResponsesImageGenerationToolModel, tool["model"])
 	require.Equal(t, "webp", tool["output_format"])
 }
 
