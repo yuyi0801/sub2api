@@ -2,7 +2,6 @@ package service
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -956,111 +955,29 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		return nil, err
 	}
 
-	responsesBody, err := buildOpenAIImagesResponsesRequest(parsed, requestModel)
+	imageReq := buildOpenAIImagesConversationRequest(parsed, requestModel)
+	imageResult, err := s.forwardOpenAIChatGPTImageConversation(upstreamCtx, c, account, token, imageReq)
+	if err != nil {
+		s.writeOpenAIChatGPTImageError(c, err)
+		return nil, err
+	}
+	err = s.writeOpenAIImagesConversationResult(c, parsed, imageReq, imageResult, requestModel)
 	if err != nil {
 		return nil, err
 	}
-	setOpsUpstreamRequestBody(c, responsesBody)
-
-	upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, responsesBody, token, true, parsed.StickySessionSeed(), false)
-	if err != nil {
-		return nil, err
-	}
-	upstreamReq.Header.Set("Content-Type", "application/json")
-	upstreamReq.Header.Set("Accept", "text/event-stream")
-
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
-	upstreamStart := time.Now()
-	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
-	if err != nil {
-		safeErr := sanitizeUpstreamErrorMessage(err.Error())
-		setOpsUpstreamError(c, 0, safeErr, "")
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform:           account.Platform,
-			AccountID:          account.ID,
-			AccountName:        account.Name,
-			UpstreamStatusCode: 0,
-			UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
-			Kind:               "request_error",
-			Message:            safeErr,
-		})
-		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
-	}
-	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-		_ = resp.Body.Close()
-		resp.Body = io.NopCloser(bytes.NewReader(respBody))
-		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
-		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-				Platform:           account.Platform,
-				AccountID:          account.ID,
-				AccountName:        account.Name,
-				UpstreamStatusCode: resp.StatusCode,
-				UpstreamRequestID:  resp.Header.Get("x-request-id"),
-				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
-				Kind:               "failover",
-				Message:            upstreamMsg,
-			})
-			s.handleFailoverSideEffects(upstreamCtx, resp, account)
-			return nil, &UpstreamFailoverError{
-				StatusCode:             resp.StatusCode,
-				ResponseBody:           respBody,
-				RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
-			}
-		}
-		return s.handleErrorResponse(upstreamCtx, resp, c, account, responsesBody)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var (
-		usage        OpenAIUsage
-		imageCount   int
-		firstTokenMs *int
-	)
-	if parsed.Stream {
-		usage, imageCount, firstTokenMs, err = s.handleOpenAIImagesOAuthStreamingResponse(resp, c, startTime, parsed.ResponseFormat, openAIImagesStreamPrefix(parsed), requestModel)
-		if err != nil {
-			if imageCount > 0 {
-				return &OpenAIForwardResult{
-					RequestID:       resp.Header.Get("x-request-id"),
-					Usage:           usage,
-					Model:           requestModel,
-					UpstreamModel:   requestModel,
-					Stream:          parsed.Stream,
-					ResponseHeaders: resp.Header.Clone(),
-					Duration:        time.Since(startTime),
-					FirstTokenMs:    firstTokenMs,
-					ImageCount:      imageCount,
-					ImageSize:       parsed.SizeTier,
-				}, err
-			}
-			return nil, err
-		}
-	} else {
-		usage, imageCount, err = s.handleOpenAIImagesOAuthNonStreamingResponse(resp, c, parsed.ResponseFormat, requestModel)
-		if err != nil {
-			return nil, err
-		}
-	}
+	imageCount := len(imageResult.Images)
 	if imageCount <= 0 {
 		imageCount = parsed.N
 	}
 	return &OpenAIForwardResult{
-		RequestID:       resp.Header.Get("x-request-id"),
-		Usage:           usage,
+		RequestID:       imageResult.RequestID,
+		Usage:           imageResult.Usage,
 		Model:           requestModel,
 		UpstreamModel:   requestModel,
 		Stream:          parsed.Stream,
-		ResponseHeaders: resp.Header.Clone(),
 		Duration:        time.Since(startTime),
-		FirstTokenMs:    firstTokenMs,
 		ImageCount:      imageCount,
 		ImageSize:       parsed.SizeTier,
+		BillingModel:    openAIChatGPTImageBillingModel,
 	}, nil
 }

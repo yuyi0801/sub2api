@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -159,7 +160,7 @@ func TestOpenAIGatewayServiceForward_CodexImageToolUsesImage2AndPreservesMainMod
 	tests := []string{"gpt-5.4", "gpt-5.4-mini", "gpt-5.5"}
 	for _, model := range tests {
 		t.Run(model, func(t *testing.T) {
-			upstream := &httpUpstreamRecorder{resp: openAICompatSSECompletedResponse("resp_"+strings.ReplaceAll(model, ".", "_"), model)}
+			upstream := newOpenAIImageConversationSuccessRecorder("file-"+strings.ReplaceAll(model, ".", "-"), []byte("image-"+model))
 			svc := newOpenAIImageGenerationControlTestService(upstream)
 			c, _ := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.98.0")
 			account := newOpenAIImageGenerationControlTestOAuthAccount()
@@ -169,11 +170,13 @@ func TestOpenAIGatewayServiceForward_CodexImageToolUsesImage2AndPreservesMainMod
 
 			require.NoError(t, err)
 			require.NotNil(t, result)
-			require.NotNil(t, upstream.lastReq)
-			require.Equal(t, model, gjson.GetBytes(upstream.lastBody, "model").String())
-			require.Equal(t, "image_generation", gjson.GetBytes(upstream.lastBody, "tool_choice.type").String())
-			require.Equal(t, openAIResponsesImageGenerationToolModel, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation").model`).String())
-			require.Equal(t, "png", gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation").output_format`).String())
+			require.Equal(t, model, result.Model)
+			require.Equal(t, "gpt-image-2", result.BillingModel)
+			require.Equal(t, 1, result.ImageCount)
+			require.NotNil(t, upstream.requests[2])
+			require.Equal(t, openAIChatGPTConversationURL, upstream.requests[2].URL.String())
+			require.Equal(t, "gpt-5-3", gjson.GetBytes(upstream.bodies[2], "model").String())
+			require.Equal(t, "picture_v2", gjson.GetBytes(upstream.bodies[2], "system_hints.0").String())
 		})
 	}
 }
@@ -193,6 +196,39 @@ func TestOpenAIGatewayServiceForward_CodexTextRequestDoesNotForceImageTool(t *te
 	require.NotNil(t, result)
 	require.NotNil(t, upstream.lastReq)
 	require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists())
+}
+
+func newOpenAIImageConversationSuccessRecorder(fileID string, image []byte) *httpUpstreamRecorder {
+	return &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"token":"sentinel-token"}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"conduit_token":"conduit-token"}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "X-Request-Id": []string{"req_img_conv"}},
+			Body: io.NopCloser(strings.NewReader(
+				`data: {"conversation_id":"conv_123","message":{"author":{"role":"tool"},"metadata":{"async_task_type":"image_gen"},"content":{"content_type":"multimodal_text","parts":[{"asset_pointer":"file-service://` + fileID + `"}]}}}` + "\n\n" +
+					"data: [DONE]\n\n",
+			)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"download_url":"https://download.example/image.png"}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"image/png"}},
+			Body:       io.NopCloser(bytes.NewReader(image)),
+		},
+	}}
 }
 
 func TestOpenAIGatewayServiceForward_CodexSparkDoesNotInjectImage2(t *testing.T) {
