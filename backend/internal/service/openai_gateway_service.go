@@ -22,6 +22,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
@@ -5214,6 +5215,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if result == nil {
 		return errors.New("openai usage result is nil")
 	}
+	if shouldSplitOpenAIImageToolUsage(input) {
+		return s.recordSplitOpenAIImageToolUsage(ctx, input)
+	}
 	if s.rateLimitService != nil && input.Account != nil && input.Account.Platform == PlatformOpenAI {
 		s.rateLimitService.ResetOpenAI403Counter(ctx, input.Account.ID)
 	}
@@ -5420,6 +5424,105 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
 
 	return nil
+}
+
+func shouldSplitOpenAIImageToolUsage(input *OpenAIRecordUsageInput) bool {
+	if input == nil || input.Result == nil {
+		return false
+	}
+	result := input.Result
+	if result.ImageCount <= 0 {
+		return false
+	}
+	imageModel := strings.TrimSpace(result.BillingModel)
+	if imageModel == "" || !isOpenAIImageBillingModelAlias(imageModel) {
+		return false
+	}
+	primaryModel := strings.TrimSpace(result.Model)
+	return primaryModel != "" && primaryModel != imageModel
+}
+
+func openAIUsageHasBillableTextTokens(usage OpenAIUsage) bool {
+	inputTokens := usage.InputTokens - usage.CacheReadInputTokens
+	if inputTokens < 0 {
+		inputTokens = 0
+	}
+	outputTokens := usage.OutputTokens - usage.ImageOutputTokens
+	if outputTokens < 0 {
+		outputTokens = 0
+	}
+	return inputTokens > 0 ||
+		outputTokens > 0 ||
+		usage.CacheCreationInputTokens > 0 ||
+		usage.CacheReadInputTokens > 0
+}
+
+func splitUsageRequestID(base string, part string) string {
+	base = strings.TrimSpace(base)
+	part = strings.TrimSpace(part)
+	if base == "" || part == "" {
+		return base
+	}
+	return base + ":" + part
+}
+
+func contextWithoutUsageRequestIDs(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = context.WithValue(ctx, ctxkey.ClientRequestID, "")
+	ctx = context.WithValue(ctx, ctxkey.RequestID, "")
+	return ctx
+}
+
+func (s *OpenAIGatewayService) recordSplitOpenAIImageToolUsage(ctx context.Context, input *OpenAIRecordUsageInput) error {
+	result := input.Result
+	imageModel := strings.TrimSpace(result.BillingModel)
+	baseRequestID := resolveUsageBillingRequestID(ctx, result.RequestID)
+	splitCtx := contextWithoutUsageRequestIDs(ctx)
+	hasTextUsage := openAIUsageHasBillableTextTokens(result.Usage)
+
+	imageResult := *result
+	imageResult.RequestID = baseRequestID
+	if hasTextUsage {
+		imageResult.RequestID = splitUsageRequestID(baseRequestID, "image")
+	}
+	imageResult.Model = imageModel
+	imageResult.BillingModel = imageModel
+	imageResult.UpstreamModel = ""
+	imageResult.Usage = OpenAIUsage{}
+
+	imageInput := *input
+	imageInput.Result = &imageResult
+	imageInput.ChannelUsageFields = ChannelUsageFields{
+		ChannelID:          input.ChannelID,
+		OriginalModel:      imageModel,
+		ChannelMappedModel: imageModel,
+		BillingModelSource: BillingModelSourceRequested,
+	}
+	if err := s.RecordUsage(splitCtx, &imageInput); err != nil {
+		return err
+	}
+
+	if !hasTextUsage {
+		return nil
+	}
+
+	textResult := *result
+	textResult.RequestID = splitUsageRequestID(baseRequestID, "text")
+	textResult.BillingModel = ""
+	textResult.ImageCount = 0
+	textResult.ImageSize = ""
+	textOutputTokens := textResult.Usage.OutputTokens - textResult.Usage.ImageOutputTokens
+	if textOutputTokens < 0 {
+		textOutputTokens = 0
+	}
+	textResult.Usage.OutputTokens = textOutputTokens
+	textResult.Usage.ImageOutputTokens = 0
+
+	textInput := *input
+	textInput.Result = &textResult
+	return s.RecordUsage(splitCtx, &textInput)
 }
 
 func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(

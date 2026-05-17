@@ -19,12 +19,14 @@ type openAIRecordUsageLogRepoStub struct {
 	err        error
 	calls      int
 	lastLog    *UsageLog
+	logs       []*UsageLog
 	lastCtxErr error
 }
 
 func (s *openAIRecordUsageLogRepoStub) Create(ctx context.Context, log *UsageLog) (bool, error) {
 	s.calls++
 	s.lastLog = log
+	s.logs = append(s.logs, log)
 	s.lastCtxErr = ctx.Err()
 	return s.inserted, s.err
 }
@@ -36,12 +38,14 @@ type openAIRecordUsageBillingRepoStub struct {
 	err        error
 	calls      int
 	lastCmd    *UsageBillingCommand
+	cmds       []*UsageBillingCommand
 	lastCtxErr error
 }
 
 func (s *openAIRecordUsageBillingRepoStub) Apply(ctx context.Context, cmd *UsageBillingCommand) (*UsageBillingApplyResult, error) {
 	s.calls++
 	s.lastCmd = cmd
+	s.cmds = append(s.cmds, cmd)
 	s.lastCtxErr = ctx.Err()
 	if s.err != nil {
 		return nil, s.err
@@ -1365,6 +1369,130 @@ func TestOpenAIGatewayServiceRecordUsage_ImageUsesPerImageBillingEvenWithUsageTo
 	require.InDelta(t, 0.0, usageRepo.lastLog.InputCost, 1e-12)
 	require.InDelta(t, 0.0, usageRepo.lastLog.OutputCost, 1e-12)
 	require.InDelta(t, 0.0, usageRepo.lastLog.ImageOutputCost, 1e-12)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_CodexImageToolUsesImageModelForImageBill(t *testing.T) {
+	imagePrice := 0.201
+	groupID := int64(125)
+
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID:    "resp_codex_image_tool",
+			Model:        "gpt-5.5",
+			BillingModel: "gpt-image-2",
+			ImageCount:   1,
+			ImageSize:    "2K",
+			Duration:     time.Second,
+		},
+		APIKey: &APIKey{
+			ID:      10125,
+			GroupID: i64p(groupID),
+			Group: &Group{
+				ID:             groupID,
+				RateMultiplier: 1,
+				ImagePrice2K:   &imagePrice,
+			},
+		},
+		User:    &User{ID: 20125},
+		Account: &Account{ID: 30125},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, usageRepo.calls)
+	require.Equal(t, 1, billingRepo.calls)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, "resp_codex_image_tool", usageRepo.lastLog.RequestID)
+	require.Equal(t, "gpt-image-2", usageRepo.lastLog.Model)
+	require.Equal(t, "gpt-image-2", usageRepo.lastLog.RequestedModel)
+	require.Nil(t, usageRepo.lastLog.UpstreamModel)
+	require.Equal(t, 1, usageRepo.lastLog.ImageCount)
+	require.NotNil(t, usageRepo.lastLog.ImageSize)
+	require.Equal(t, "2K", *usageRepo.lastLog.ImageSize)
+	require.NotNil(t, usageRepo.lastLog.BillingMode)
+	require.Equal(t, string(BillingModeImage), *usageRepo.lastLog.BillingMode)
+	require.InDelta(t, 0.201, usageRepo.lastLog.TotalCost, 1e-12)
+	require.Equal(t, "gpt-image-2", billingRepo.lastCmd.Model)
+	require.Equal(t, 1, billingRepo.lastCmd.ImageCount)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_CodexImageToolSplitsTokenAndImageBills(t *testing.T) {
+	imagePrice := 0.25
+	groupID := int64(126)
+
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_codex_mixed_image_tool",
+			Model:     "gpt-5.4",
+			Usage: OpenAIUsage{
+				InputTokens:              100,
+				OutputTokens:             30,
+				CacheCreationInputTokens: 7,
+				CacheReadInputTokens:     11,
+				ImageOutputTokens:        20,
+			},
+			BillingModel: "gpt-image-2",
+			ImageCount:   1,
+			ImageSize:    "1K",
+			Duration:     time.Second,
+		},
+		APIKey: &APIKey{
+			ID:      10126,
+			GroupID: i64p(groupID),
+			Group: &Group{
+				ID:             groupID,
+				RateMultiplier: 1,
+				ImagePrice1K:   &imagePrice,
+			},
+		},
+		User:    &User{ID: 20126},
+		Account: &Account{ID: 30126},
+		ChannelUsageFields: ChannelUsageFields{
+			OriginalModel:      "gpt-5.4",
+			ChannelMappedModel: "gpt-5.4",
+			BillingModelSource: BillingModelSourceChannelMapped,
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 2, usageRepo.calls)
+	require.Equal(t, 2, billingRepo.calls)
+	require.Len(t, usageRepo.logs, 2)
+	require.Len(t, billingRepo.cmds, 2)
+
+	imageLog := usageRepo.logs[0]
+	require.Equal(t, "resp_codex_mixed_image_tool:image", imageLog.RequestID)
+	require.Equal(t, "gpt-image-2", imageLog.Model)
+	require.Equal(t, "gpt-image-2", imageLog.RequestedModel)
+	require.Equal(t, 1, imageLog.ImageCount)
+	require.Zero(t, imageLog.InputTokens)
+	require.Zero(t, imageLog.OutputTokens)
+	require.NotNil(t, imageLog.BillingMode)
+	require.Equal(t, string(BillingModeImage), *imageLog.BillingMode)
+	require.InDelta(t, 0.25, imageLog.TotalCost, 1e-12)
+
+	textLog := usageRepo.logs[1]
+	require.Equal(t, "resp_codex_mixed_image_tool:text", textLog.RequestID)
+	require.Equal(t, "gpt-5.4", textLog.Model)
+	require.Equal(t, "gpt-5.4", textLog.RequestedModel)
+	require.Zero(t, textLog.ImageCount)
+	require.Equal(t, 89, textLog.InputTokens)
+	require.Equal(t, 10, textLog.OutputTokens)
+	require.Zero(t, textLog.ImageOutputTokens)
+	require.NotNil(t, textLog.BillingMode)
+	require.Equal(t, string(BillingModeToken), *textLog.BillingMode)
+
+	require.Equal(t, "gpt-image-2", billingRepo.cmds[0].Model)
+	require.Equal(t, 1, billingRepo.cmds[0].ImageCount)
+	require.Equal(t, "gpt-5.4", billingRepo.cmds[1].Model)
+	require.Zero(t, billingRepo.cmds[1].ImageCount)
 }
 
 func TestOpenAIGatewayServiceRecordUsage_ImageSharedMultiplierPreservesExistingBehavior(t *testing.T) {
