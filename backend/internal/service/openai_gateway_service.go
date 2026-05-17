@@ -2691,7 +2691,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	httpInvalidEncryptedContentRetryTried := false
-	httpImageToolChoiceAutoRetryTried := false
 	for {
 		// Build upstream request
 		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
@@ -2756,17 +2755,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			}
 			imageToolChoiceMissing := IsImageGenerationIntentMap(openAIResponsesEndpoint, reqModel, reqBody) &&
 				isOpenAIImageGenerationToolChoiceMissingError(resp.StatusCode, upstreamMsg, respBody)
-			if !httpImageToolChoiceAutoRetryTried && imageToolChoiceMissing {
-				reqBody["tool_choice"] = "auto"
-				body, err = json.Marshal(reqBody)
-				if err != nil {
-					return nil, fmt.Errorf("serialize image_generation tool_choice retry body: %w", err)
-				}
-				setOpsUpstreamRequestBody(c, body)
-				httpImageToolChoiceAutoRetryTried = true
-				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Retrying non-WSv2 image_generation request once with tool_choice=auto (account: %s)", account.Name)
-				continue
-			}
 			if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) || imageToolChoiceMissing {
 				upstreamDetail := ""
 				if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
