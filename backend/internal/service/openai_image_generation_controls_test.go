@@ -201,7 +201,7 @@ func TestOpenAIGatewayServiceForward_CodexTextRequestDoesNotForceImageTool(t *te
 func TestOpenAIGatewayServiceForward_CodexBridgeImageEditIntentUsesConversation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	upstream := newOpenAIImageConversationSuccessRecorder("file-bridge-edit", []byte("bridge-image"))
+	upstream := newOpenAIImageConversationSuccessRecorderWithUploads("file-bridge-edit", []byte("bridge-image"), "bridge-source")
 	svc := newOpenAIImageGenerationControlTestService(upstream)
 	svc.cfg.Gateway.CodexImageGenerationBridgeEnabled = true
 	c, _ := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.98.0")
@@ -226,9 +226,9 @@ func TestOpenAIGatewayServiceForward_CodexBridgeImageEditIntentUsesConversation(
 	require.Equal(t, "gpt-5.5", result.Model)
 	require.Equal(t, "gpt-image-2", result.BillingModel)
 	require.Equal(t, 1, result.ImageCount)
-	require.Len(t, upstream.requests, 5)
-	require.Equal(t, openAIChatGPTConversationURL, upstream.requests[2].URL.String())
-	require.Equal(t, "picture_v2", gjson.GetBytes(upstream.bodies[2], "system_hints.0").String())
+	conversationBody := findOpenAIImageConversationBody(t, upstream)
+	require.Equal(t, "picture_v2", gjson.GetBytes(conversationBody, "system_hints.0").String())
+	require.Equal(t, "file-service://bridge-source", gjson.GetBytes(conversationBody, "messages.0.content.parts.0.asset_pointer").String())
 }
 
 func TestOpenAIGatewayServiceForward_CodexBridgeImageDescribeStaysText(t *testing.T) {
@@ -263,18 +263,42 @@ func TestOpenAIGatewayServiceForward_CodexBridgeImageDescribeStaysText(t *testin
 }
 
 func newOpenAIImageConversationSuccessRecorder(fileID string, image []byte) *httpUpstreamRecorder {
-	return &httpUpstreamRecorder{responses: []*http.Response{
-		{
+	return newOpenAIImageConversationSuccessRecorderWithUploads(fileID, image)
+}
+
+func newOpenAIImageConversationSuccessRecorderWithUploads(fileID string, image []byte, uploadIDs ...string) *httpUpstreamRecorder {
+	responses := make([]*http.Response, 0, len(uploadIDs)*3+5)
+	for _, uploadID := range uploadIDs {
+		responses = append(responses,
+			&http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"file_id":"` + uploadID + `","upload_url":"https://upload.example/` + uploadID + `"}`)),
+			},
+			&http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+			},
+			&http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+			},
+		)
+	}
+	responses = append(responses,
+		&http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 			Body:       io.NopCloser(strings.NewReader(`{"token":"sentinel-token"}`)),
 		},
-		{
+		&http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 			Body:       io.NopCloser(strings.NewReader(`{"conduit_token":"conduit-token"}`)),
 		},
-		{
+		&http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "X-Request-Id": []string{"req_img_conv"}},
 			Body: io.NopCloser(strings.NewReader(
@@ -282,17 +306,30 @@ func newOpenAIImageConversationSuccessRecorder(fileID string, image []byte) *htt
 					"data: [DONE]\n\n",
 			)),
 		},
-		{
+		&http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 			Body:       io.NopCloser(strings.NewReader(`{"download_url":"https://download.example/image.png"}`)),
 		},
-		{
+		&http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"image/png"}},
 			Body:       io.NopCloser(bytes.NewReader(image)),
 		},
-	}}
+	)
+	return &httpUpstreamRecorder{responses: responses}
+}
+
+func findOpenAIImageConversationBody(t *testing.T, upstream *httpUpstreamRecorder) []byte {
+	t.Helper()
+	for i, req := range upstream.requests {
+		if req != nil && req.URL.String() == openAIChatGPTConversationURL {
+			require.Less(t, i, len(upstream.bodies))
+			return upstream.bodies[i]
+		}
+	}
+	require.Fail(t, "missing ChatGPT image conversation request")
+	return nil
 }
 
 func TestOpenAIGatewayServiceForward_CodexSparkDoesNotInjectImage2(t *testing.T) {
