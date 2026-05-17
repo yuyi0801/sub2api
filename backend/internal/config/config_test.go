@@ -211,6 +211,19 @@ func TestLoadIdempotencyConfigFromEnv(t *testing.T) {
 	}
 }
 
+func TestLoadUpdateGitHubRepoFromEnv(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("UPDATE_GITHUB_REPO", "yuyi0801/sub2api")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Update.GitHubRepo != "yuyi0801/sub2api" {
+		t.Fatalf("Update.GitHubRepo = %q, want %q", cfg.Update.GitHubRepo, "yuyi0801/sub2api")
+	}
+}
+
 func TestLoadSchedulingConfigFromEnv(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_SCHEDULING_STICKY_SESSION_MAX_WAITING", "5")

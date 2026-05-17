@@ -152,6 +152,8 @@ type UpdateConfig struct {
 	// 支持 http/https/socks5/socks5h 协议
 	// 例如: "http://127.0.0.1:7890", "socks5://127.0.0.1:1080"
 	ProxyURL string `mapstructure:"proxy_url"`
+	// GitHubRepo 用于在线更新检查的 GitHub 仓库，格式为 owner/repo。
+	GitHubRepo string `mapstructure:"github_repo"`
 }
 
 type IdempotencyConfig struct {
@@ -1318,6 +1320,8 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.OIDC.ValidateIDTokenExplicit = hasExplicitConfigOrEnv("oidc_connect.validate_id_token", "OIDC_CONNECT_VALIDATE_ID_TOKEN")
 	cfg.Dashboard.KeyPrefix = strings.TrimSpace(cfg.Dashboard.KeyPrefix)
 	cfg.CORS.AllowedOrigins = normalizeStringSlice(cfg.CORS.AllowedOrigins)
+	cfg.Update.ProxyURL = strings.TrimSpace(cfg.Update.ProxyURL)
+	cfg.Update.GitHubRepo = strings.TrimSpace(cfg.Update.GitHubRepo)
 	cfg.Security.ResponseHeaders.AdditionalAllowed = normalizeStringSlice(cfg.Security.ResponseHeaders.AdditionalAllowed)
 	cfg.Security.ResponseHeaders.ForceRemove = normalizeStringSlice(cfg.Security.ResponseHeaders.ForceRemove)
 	cfg.Security.CSP.Policy = strings.TrimSpace(cfg.Security.CSP.Policy)
@@ -1440,6 +1444,10 @@ func setDefaults() {
 	// CORS
 	viper.SetDefault("cors.allowed_origins", []string{})
 	viper.SetDefault("cors.allow_credentials", true)
+
+	// Update
+	viper.SetDefault("update.proxy_url", "")
+	viper.SetDefault("update.github_repo", "")
 
 	// Security
 	viper.SetDefault("security.url_allowlist.enabled", false)
