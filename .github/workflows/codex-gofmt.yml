@@ -1,0 +1,41 @@
+name: Codex gofmt
+
+on:
+  push:
+    branches:
+      - codex/chatgpt-image-conversation
+
+permissions:
+  contents: write
+
+jobs:
+  gofmt:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          check-latest: false
+      - name: Format touched Go files
+        run: |
+          gofmt -w \
+            backend/internal/service/openai_chatgpt_image_conversation.go \
+            backend/internal/service/openai_images_responses.go
+      - name: Commit formatting
+        run: |
+          if git diff --quiet -- \
+            backend/internal/service/openai_chatgpt_image_conversation.go \
+            backend/internal/service/openai_images_responses.go; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            backend/internal/service/openai_chatgpt_image_conversation.go \
+            backend/internal/service/openai_images_responses.go
+          git commit -m "gofmt codex image conversation files"
+          git push
