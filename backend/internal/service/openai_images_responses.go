@@ -919,6 +919,17 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	parsed *OpenAIImagesRequest,
 	channelMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	if sidecarCfg, enabled, cfgErr := s.openAIImageSidecarConfig(); enabled {
+		if cfgErr != nil {
+			s.writeOpenAIImageSidecarError(c, http.StatusBadGateway, "config", cfgErr.Error(), "")
+			if c != nil {
+				c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"type": "upstream_error", "message": cfgErr.Error()}})
+			}
+			return nil, cfgErr
+		}
+		return s.forwardOpenAIImagesOAuthSidecar(ctx, c, parsed, channelMappedModel, sidecarCfg)
+	}
+
 	startTime := time.Now()
 	requestModel := strings.TrimSpace(parsed.Model)
 	if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {

@@ -2076,7 +2076,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		imageGenerationAllowed = GroupAllowsImageGeneration(apiKey.Group)
 	}
 	codexImageGenerationBridgeEnabled := isCodexCLI && imageGenerationAllowed && s.isCodexImageGenerationBridgeEnabled(ctx, account, apiKey)
-	if IsImageGenerationIntentMap(openAIResponsesEndpoint, reqModel, reqBody) && !imageGenerationAllowed {
+	explicitImageGenerationIntent := IsImageGenerationIntent(openAIResponsesEndpoint, reqModel, body)
+	if explicitImageGenerationIntent && !imageGenerationAllowed {
 		setOpsUpstreamError(c, http.StatusForbidden, ImageGenerationPermissionMessage(), "")
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": gin.H{
@@ -2463,6 +2464,25 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if marshalErr != nil {
 				return nil, fmt.Errorf("serialize request body: %w", marshalErr)
 			}
+		}
+	}
+
+	if account.Type == AccountTypeOAuth && explicitImageGenerationIntent {
+		if isCodexSparkModel(upstreamModel) {
+			if normalizeOpenAIResponsesImageGenerationToolChoice(reqBody) {
+				var marshalErr error
+				body, marshalErr = json.Marshal(reqBody)
+				if marshalErr != nil {
+					return nil, fmt.Errorf("serialize spark image tool choice body: %w", marshalErr)
+				}
+			}
+		} else if sidecarCfg, enabled, cfgErr := s.openAIImageSidecarConfig(); enabled {
+			if cfgErr != nil {
+				s.writeOpenAIImageSidecarError(c, http.StatusBadGateway, "config", cfgErr.Error(), "")
+				c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"type": "upstream_error", "message": cfgErr.Error()}})
+				return nil, cfgErr
+			}
+			return s.forwardOpenAIResponsesImageSidecar(ctx, c, reqBody, originalModel, upstreamModel, imageSizeTier, reqStream, sidecarCfg, startTime)
 		}
 	}
 

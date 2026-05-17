@@ -605,6 +605,14 @@ type ImageConcurrencyConfig struct {
 	MaxWaitingRequests int `mapstructure:"max_waiting_requests"`
 }
 
+type OpenAIImageSidecarConfig struct {
+	Enabled        bool   `mapstructure:"enabled"`
+	BaseURL        string `mapstructure:"base_url"`
+	APIKey         string `mapstructure:"api_key"`
+	Model          string `mapstructure:"model"`
+	TimeoutSeconds int    `mapstructure:"timeout_seconds"`
+}
+
 const (
 	ImageConcurrencyOverflowModeReject = "reject"
 	ImageConcurrencyOverflowModeWait   = "wait"
@@ -644,6 +652,8 @@ type GatewayConfig struct {
 	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
 	// ImageConcurrency: 图片生成独立并发限制配置（默认关闭）
 	ImageConcurrency ImageConcurrencyConfig `mapstructure:"image_concurrency"`
+	// OpenAIImageSidecar: OAuth/OpenAI image2 sidecar upstream.
+	OpenAIImageSidecar OpenAIImageSidecarConfig `mapstructure:"openai_image_sidecar"`
 
 	// HTTP 上游连接池配置（性能优化：支持高并发场景调优）
 	// MaxIdleConns: 所有主机的最大空闲连接总数
@@ -1331,6 +1341,9 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.Log.Environment = strings.TrimSpace(cfg.Log.Environment)
 	cfg.Log.StacktraceLevel = strings.ToLower(strings.TrimSpace(cfg.Log.StacktraceLevel))
 	cfg.Log.Output.FilePath = strings.TrimSpace(cfg.Log.Output.FilePath)
+	cfg.Gateway.OpenAIImageSidecar.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.Gateway.OpenAIImageSidecar.BaseURL), "/")
+	cfg.Gateway.OpenAIImageSidecar.APIKey = strings.TrimSpace(cfg.Gateway.OpenAIImageSidecar.APIKey)
+	cfg.Gateway.OpenAIImageSidecar.Model = strings.TrimSpace(cfg.Gateway.OpenAIImageSidecar.Model)
 	cfg.Gateway.ForcedCodexInstructionsTemplateFile = strings.TrimSpace(cfg.Gateway.ForcedCodexInstructionsTemplateFile)
 	if cfg.Gateway.ForcedCodexInstructionsTemplateFile != "" {
 		content, err := os.ReadFile(cfg.Gateway.ForcedCodexInstructionsTemplateFile)
@@ -1676,6 +1689,11 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
+	viper.SetDefault("gateway.openai_image_sidecar.enabled", false)
+	viper.SetDefault("gateway.openai_image_sidecar.base_url", "")
+	viper.SetDefault("gateway.openai_image_sidecar.api_key", "")
+	viper.SetDefault("gateway.openai_image_sidecar.model", "gpt-image-2")
+	viper.SetDefault("gateway.openai_image_sidecar.timeout_seconds", 600)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
 	// OpenAI Responses WebSocket（默认开启；可通过 force_http 紧急回滚）
 	viper.SetDefault("gateway.openai_ws.enabled", true)

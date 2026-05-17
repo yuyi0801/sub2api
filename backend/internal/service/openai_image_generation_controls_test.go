@@ -159,9 +159,17 @@ func TestOpenAIGatewayServiceForward_CodexImageToolUsesImage2AndPreservesMainMod
 	tests := []string{"gpt-5.4", "gpt-5.4-mini", "gpt-5.5"}
 	for _, model := range tests {
 		t.Run(model, func(t *testing.T) {
-			upstream := &httpUpstreamRecorder{resp: openAICompatSSECompletedResponse("resp_"+strings.ReplaceAll(model, ".", "_"), model)}
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"req_sidecar"}},
+				Body:       io.NopCloser(strings.NewReader(`{"created":1710000000,"data":[{"b64_json":"aGVsbG8=","revised_prompt":"draw"}],"usage":{"input_tokens":3,"output_tokens":4,"output_tokens_details":{"image_tokens":2}}}`)),
+			}}
 			svc := newOpenAIImageGenerationControlTestService(upstream)
-			c, _ := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.98.0")
+			svc.cfg.Gateway.OpenAIImageSidecar.Enabled = true
+			svc.cfg.Gateway.OpenAIImageSidecar.BaseURL = "http://chatgpt2api-image:80"
+			svc.cfg.Gateway.OpenAIImageSidecar.APIKey = "sidecar-key"
+			svc.cfg.Gateway.OpenAIImageSidecar.Model = "gpt-image-2"
+			c, recorder := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.98.0")
 			account := newOpenAIImageGenerationControlTestOAuthAccount()
 			body := []byte(`{"model":"` + model + `","input":"draw","stream":false,"tool_choice":{"type":"image_generation"}}`)
 
@@ -170,12 +178,51 @@ func TestOpenAIGatewayServiceForward_CodexImageToolUsesImage2AndPreservesMainMod
 			require.NoError(t, err)
 			require.NotNil(t, result)
 			require.NotNil(t, upstream.lastReq)
-			require.Equal(t, model, gjson.GetBytes(upstream.lastBody, "model").String())
-			require.Equal(t, "image_generation", gjson.GetBytes(upstream.lastBody, "tool_choice.type").String())
-			require.Equal(t, openAIResponsesImageGenerationToolModel, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation").model`).String())
-			require.Equal(t, "png", gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation").output_format`).String())
+			require.Equal(t, "http://chatgpt2api-image:80/v1/images/generations", upstream.lastReq.URL.String())
+			require.Equal(t, "Bearer sidecar-key", upstream.lastReq.Header.Get("Authorization"))
+			require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.lastBody, "model").String())
+			require.Equal(t, "draw", gjson.GetBytes(upstream.lastBody, "prompt").String())
+			require.Equal(t, model, gjson.Get(recorder.Body.String(), "model").String())
+			require.Equal(t, "image_generation_call", gjson.Get(recorder.Body.String(), "output.0.type").String())
+			require.Equal(t, "aGVsbG8=", gjson.Get(recorder.Body.String(), "output.0.result").String())
+			require.Equal(t, "gpt-image-2", result.BillingModel)
+			require.Equal(t, 1, result.ImageCount)
+			require.Zero(t, result.Usage.InputTokens)
+			require.Zero(t, result.Usage.OutputTokens)
+			require.Equal(t, int64(3), gjson.Get(recorder.Body.String(), "usage.input_tokens").Int())
+			require.Equal(t, int64(4), gjson.Get(recorder.Body.String(), "usage.output_tokens").Int())
 		})
 	}
+}
+
+func TestOpenAIGatewayServiceForward_CodexImageSidecarStreamsResponsesEvents(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"req_sidecar_stream"}},
+		Body:       io.NopCloser(strings.NewReader(`{"created":1710000000,"data":[{"b64_json":"c3RyZWFtLWltYWdl","revised_prompt":"draw"}]}`)),
+	}}
+	svc := newOpenAIImageGenerationControlTestService(upstream)
+	svc.cfg.Gateway.OpenAIImageSidecar.Enabled = true
+	svc.cfg.Gateway.OpenAIImageSidecar.BaseURL = "http://chatgpt2api-image:80"
+	svc.cfg.Gateway.OpenAIImageSidecar.APIKey = "sidecar-key"
+	svc.cfg.Gateway.OpenAIImageSidecar.Model = "gpt-image-2"
+	c, recorder := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.98.0")
+	account := newOpenAIImageGenerationControlTestOAuthAccount()
+	body := []byte(`{"model":"gpt-5.5","input":"draw","stream":true,"tools":[{"type":"image_generation"}],"tool_choice":{"type":"image_generation"}}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.Stream)
+	require.Equal(t, "text/event-stream", recorder.Header().Get("Content-Type"))
+	require.Contains(t, recorder.Body.String(), `"type":"response.output_item.done"`)
+	require.Contains(t, recorder.Body.String(), `"type":"response.completed"`)
+	require.Contains(t, recorder.Body.String(), `"type":"image_generation_call"`)
+	require.Contains(t, recorder.Body.String(), `"result":"c3RyZWFtLWltYWdl"`)
+	require.Contains(t, recorder.Body.String(), "data: [DONE]")
 }
 
 func TestOpenAIGatewayServiceForward_CodexTextRequestDoesNotForceImageTool(t *testing.T) {
@@ -193,6 +240,30 @@ func TestOpenAIGatewayServiceForward_CodexTextRequestDoesNotForceImageTool(t *te
 	require.NotNil(t, result)
 	require.NotNil(t, upstream.lastReq)
 	require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists())
+}
+
+func TestOpenAIGatewayServiceForward_CodexBridgeTextDoesNotRouteToSidecar(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &httpUpstreamRecorder{resp: openAICompatSSECompletedResponse("resp_bridge_text_only", "gpt-5.4")}
+	svc := newOpenAIImageGenerationControlTestService(upstream)
+	svc.cfg.Gateway.CodexImageGenerationBridgeEnabled = true
+	svc.cfg.Gateway.OpenAIImageSidecar.Enabled = true
+	svc.cfg.Gateway.OpenAIImageSidecar.BaseURL = "http://chatgpt2api-image:80"
+	svc.cfg.Gateway.OpenAIImageSidecar.APIKey = "sidecar-key"
+	svc.cfg.Gateway.OpenAIImageSidecar.Model = "gpt-image-2"
+	c, _ := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.98.0")
+	account := newOpenAIImageGenerationControlTestOAuthAccount()
+	body := []byte(`{"model":"gpt-5.4","input":"write code","stream":false}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, chatgptCodexURL, upstream.lastReq.URL.String())
+	require.True(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists())
+	require.Equal(t, 0, result.ImageCount)
 }
 
 func TestOpenAIGatewayServiceForward_CodexSparkDoesNotInjectImage2(t *testing.T) {

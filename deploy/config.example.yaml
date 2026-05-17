@@ -239,6 +239,21 @@ gateway:
   # OpenAI 透传模式是否放行客户端超时头（如 x-stainless-timeout）
   # 默认 false：过滤超时头，降低上游提前断流风险。
   openai_passthrough_allow_timeout_headers: false
+  # OpenAI OAuth image sidecar upstream for ChatGPT-compatible image generation.
+  # OpenAI OAuth 图片 sidecar 上游，用于通过 chatgpt2api 等服务处理图片生成/编辑。
+  #
+  # When enabled, OAuth /v1/images/* and Codex /v1/responses image_generation
+  # requests call this sidecar with model=gpt-image-2, while Codex text models
+  # such as gpt-5.5 remain client-facing. Keep api_key in env/private config.
+  # 开启后，OAuth /v1/images/* 与 Codex /v1/responses image_generation 请求会
+  # 使用 gpt-image-2 调用该 sidecar；Codex 主模型（如 gpt-5.5）保持不变。
+  # api_key 请放在环境变量或私有配置中，不要提交到仓库。
+  openai_image_sidecar:
+    enabled: false
+    base_url: ""
+    api_key: ""
+    model: "gpt-image-2"
+    timeout_seconds: 600
   # OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
   openai_ws:
     # 新版 WS mode 路由（默认关闭）。关闭时保持当前 legacy 实现行为。
