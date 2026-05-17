@@ -2076,8 +2076,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		imageGenerationAllowed = GroupAllowsImageGeneration(apiKey.Group)
 	}
 	codexImageGenerationBridgeEnabled := isCodexCLI && imageGenerationAllowed && s.isCodexImageGenerationBridgeEnabled(ctx, account, apiKey)
-	clientRequestedImageGeneration := IsImageGenerationIntent(openAIResponsesEndpoint, reqModel, body)
-	codexBridgeRequestedImageGeneration := false
 	if IsImageGenerationIntentMap(openAIResponsesEndpoint, reqModel, reqBody) && !imageGenerationAllowed {
 		setOpsUpstreamError(c, http.StatusForbidden, ImageGenerationPermissionMessage(), "")
 		c.JSON(http.StatusForbidden, gin.H{
@@ -2169,7 +2167,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		disablePatch()
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Added Codex image_generation bridge instructions")
 	}
-	codexBridgeRequestedImageGeneration = codexImageGenerationBridgeEnabled && isCodexImageGenerationBridgeIntent(reqBody)
 
 	// 对所有请求执行模型映射（包含 Codex CLI）。
 	billingModel := account.GetMappedModel(reqModel)
@@ -2477,37 +2474,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 	// Capture upstream request body for ops retry of this attempt.
 	setOpsUpstreamRequestBody(c, body)
-
-	if account.Type == AccountTypeOAuth &&
-		isCodexCLI &&
-		!isCodexSparkModel(upstreamModel) &&
-		(clientRequestedImageGeneration || codexBridgeRequestedImageGeneration) &&
-		hasOpenAIImageGenerationTool(reqBody) {
-		imageReq := buildOpenAIResponsesImageConversationRequest(reqBody, originalModel, reqStream)
-		imageReq.ImageModel = openAIChatGPTImageBillingModel
-		imageResult, imageErr := s.forwardOpenAIChatGPTImageConversation(ctx, c, account, token, imageReq)
-		if imageErr != nil {
-			s.writeOpenAIChatGPTImageError(c, imageErr)
-			return nil, imageErr
-		}
-		if err := s.writeOpenAIResponsesImageConversationResult(c, imageReq, imageResult); err != nil {
-			return nil, err
-		}
-		return &OpenAIForwardResult{
-			RequestID:       imageResult.RequestID,
-			Usage:           imageResult.Usage,
-			Model:           originalModel,
-			UpstreamModel:   upstreamModel,
-			BillingModel:    openAIChatGPTImageBillingModel,
-			ServiceTier:     extractOpenAIServiceTier(reqBody),
-			ReasoningEffort: extractOpenAIReasoningEffort(reqBody, originalModel),
-			Stream:          reqStream,
-			OpenAIWSMode:    false,
-			Duration:        time.Since(startTime),
-			ImageCount:      len(imageResult.Images),
-			ImageSize:       imageSizeTier,
-		}, nil
-	}
 
 	// 命中 WS 时仅走 WebSocket Mode；不再自动回退 HTTP。
 	if wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 {
