@@ -2077,6 +2077,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	codexImageGenerationBridgeEnabled := isCodexCLI && imageGenerationAllowed && s.isCodexImageGenerationBridgeEnabled(ctx, account, apiKey)
 	clientRequestedImageGeneration := IsImageGenerationIntent(openAIResponsesEndpoint, reqModel, body)
+	codexBridgeRequestedImageGeneration := false
 	if IsImageGenerationIntentMap(openAIResponsesEndpoint, reqModel, reqBody) && !imageGenerationAllowed {
 		setOpsUpstreamError(c, http.StatusForbidden, ImageGenerationPermissionMessage(), "")
 		c.JSON(http.StatusForbidden, gin.H{
@@ -2168,6 +2169,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		disablePatch()
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Added Codex image_generation bridge instructions")
 	}
+	codexBridgeRequestedImageGeneration = codexImageGenerationBridgeEnabled && isCodexImageGenerationBridgeIntent(reqBody)
 
 	// 对所有请求执行模型映射（包含 Codex CLI）。
 	billingModel := account.GetMappedModel(reqModel)
@@ -2479,7 +2481,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if account.Type == AccountTypeOAuth &&
 		isCodexCLI &&
 		!isCodexSparkModel(upstreamModel) &&
-		clientRequestedImageGeneration &&
+		(clientRequestedImageGeneration || codexBridgeRequestedImageGeneration) &&
 		hasOpenAIImageGenerationTool(reqBody) {
 		imageReq := buildOpenAIResponsesImageConversationRequest(reqBody, originalModel, reqStream)
 		imageReq.ImageModel = openAIChatGPTImageBillingModel

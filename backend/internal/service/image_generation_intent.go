@@ -140,6 +140,30 @@ func openAIAnyToolChoiceSelectsImageGeneration(choice any) bool {
 	return false
 }
 
+func isCodexImageGenerationBridgeIntent(reqBody map[string]any) bool {
+	if reqBody == nil || !hasOpenAIInputImage(reqBody) {
+		return false
+	}
+	prompt := strings.ToLower(extractOpenAIResponsesImagePrompt(reqBody))
+	if prompt == "" {
+		return false
+	}
+	keywords := []string{
+		"draw", "generate", "create", "make an image", "make a picture",
+		"edit", "retouch", "enhance", "upscale", "restore", "refine",
+		"optimize this image", "improve this image", "modify this image",
+		"生成", "作图", "画", "绘制", "出图", "图片生成",
+		"改图", "修图", "优化这张图", "优化图片", "优化这张图片",
+		"美化", "增强", "高清", "放大", "修复", "编辑图片", "修改图片",
+	}
+	for _, keyword := range keywords {
+		if strings.Contains(prompt, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
 func getAPIKeyFromContext(c interface{ Get(string) (any, bool) }) *APIKey {
 	if c == nil {
 		return nil

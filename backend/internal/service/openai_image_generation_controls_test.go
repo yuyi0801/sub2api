@@ -198,6 +198,70 @@ func TestOpenAIGatewayServiceForward_CodexTextRequestDoesNotForceImageTool(t *te
 	require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists())
 }
 
+func TestOpenAIGatewayServiceForward_CodexBridgeImageEditIntentUsesConversation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := newOpenAIImageConversationSuccessRecorder("file-bridge-edit", []byte("bridge-image"))
+	svc := newOpenAIImageGenerationControlTestService(upstream)
+	svc.cfg.Gateway.CodexImageGenerationBridgeEnabled = true
+	c, _ := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.98.0")
+	account := newOpenAIImageGenerationControlTestOAuthAccount()
+	body := []byte(`{
+		"model":"gpt-5.5",
+		"input":[{
+			"type":"message",
+			"role":"user",
+			"content":[
+				{"type":"input_text","text":"优化这张图片"},
+				{"type":"input_image","image_url":"data:image/png;base64,aW1hZ2U="}
+			]
+		}],
+		"stream":false
+	}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "gpt-5.5", result.Model)
+	require.Equal(t, "gpt-image-2", result.BillingModel)
+	require.Equal(t, 1, result.ImageCount)
+	require.Len(t, upstream.requests, 5)
+	require.Equal(t, openAIChatGPTConversationURL, upstream.requests[2].URL.String())
+	require.Equal(t, "picture_v2", gjson.GetBytes(upstream.bodies[2], "system_hints.0").String())
+}
+
+func TestOpenAIGatewayServiceForward_CodexBridgeImageDescribeStaysText(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &httpUpstreamRecorder{resp: openAICompatSSECompletedResponse("resp_describe_image", "gpt-5.5")}
+	svc := newOpenAIImageGenerationControlTestService(upstream)
+	svc.cfg.Gateway.CodexImageGenerationBridgeEnabled = true
+	c, _ := newOpenAIImageGenerationControlTestContext(true, "codex_cli_rs/0.98.0")
+	account := newOpenAIImageGenerationControlTestOAuthAccount()
+	body := []byte(`{
+		"model":"gpt-5.5",
+		"input":[{
+			"type":"message",
+			"role":"user",
+			"content":[
+				{"type":"input_text","text":"描述这张图片"},
+				{"type":"input_image","image_url":"data:image/png;base64,aW1hZ2U="}
+			]
+		}],
+		"stream":false
+	}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, chatgptCodexURL, upstream.lastReq.URL.String())
+	require.Empty(t, result.BillingModel)
+	require.Equal(t, 0, result.ImageCount)
+}
+
 func newOpenAIImageConversationSuccessRecorder(fileID string, image []byte) *httpUpstreamRecorder {
 	return &httpUpstreamRecorder{responses: []*http.Response{
 		{
