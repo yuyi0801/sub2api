@@ -410,6 +410,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
+			logOpenAIImageSidecarBillingVisible(reqLog, account.ID, result, GetInboundEndpoint(c), GetUpstreamEndpoint(c, account.Platform))
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
 		}
@@ -1541,6 +1542,24 @@ func (h *OpenAIGatewayHandler) submitOpenAIUsageRecordTask(result *service.OpenA
 		return
 	}
 	h.submitUsageRecordTask(task)
+}
+
+func logOpenAIImageSidecarBillingVisible(log *zap.Logger, accountID int64, result *service.OpenAIForwardResult, inboundEndpoint string, upstreamEndpoint string) {
+	if log == nil || result == nil || result.ImageCount <= 0 {
+		return
+	}
+	log.Info("openai.image_sidecar_success",
+		zap.Int64("account_id", accountID),
+		zap.String("request_id", result.RequestID),
+		zap.String("response_id", result.ResponseID),
+		zap.String("model", result.Model),
+		zap.String("billing_model", result.BillingModel),
+		zap.String("upstream_model", result.UpstreamModel),
+		zap.Int("image_count", result.ImageCount),
+		zap.String("image_size", result.ImageSize),
+		zap.String("inbound_endpoint", inboundEndpoint),
+		zap.String("upstream_endpoint", upstreamEndpoint),
+	)
 }
 
 func (h *OpenAIGatewayHandler) submitMandatoryUsageRecordTask(task service.UsageRecordTask) {

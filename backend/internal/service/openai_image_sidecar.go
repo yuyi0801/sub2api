@@ -11,14 +11,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+	"go.uber.org/zap"
 )
 
-const defaultOpenAIImageSidecarModel = "gpt-image-2"
+const (
+	defaultOpenAIImageSidecarModel = "gpt-image-2"
+	openAIImageSidecarCaller       = "sub2api"
+	openAIImageSidecarSource       = "openai-image-sidecar"
+)
 
 type openAIImageSidecarConfig struct {
 	baseURL string
@@ -101,6 +107,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuthSidecar(
 		return nil, err
 	}
 	upstreamReq.Header.Set("Authorization", "Bearer "+cfg.apiKey)
+	applyOpenAIImageSidecarTraceHeaders(upstreamReq)
 	if strings.TrimSpace(forwardContentType) != "" {
 		upstreamReq.Header.Set("Content-Type", forwardContentType)
 	}
@@ -162,7 +169,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuthSidecar(
 	if imageCount <= 0 {
 		imageCount = parsed.N
 	}
-	return &OpenAIForwardResult{
+	result := &OpenAIForwardResult{
 		RequestID:       resp.Header.Get("x-request-id"),
 		Usage:           usage,
 		Model:           requestModel,
@@ -174,7 +181,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuthSidecar(
 		FirstTokenMs:    firstTokenMs,
 		ImageCount:      imageCount,
 		ImageSize:       parsed.SizeTier,
-	}, nil
+	}
+	logOpenAIImageSidecarForwardSuccess(result, parsed.Endpoint, false)
+	return result, nil
 }
 
 func buildOpenAIImagesSidecarBody(parsed *OpenAIImagesRequest, sidecarModel string) ([]byte, string, error) {
@@ -297,6 +306,7 @@ func (s *OpenAIGatewayService) forwardOpenAIResponsesImageSidecar(
 		return nil, err
 	}
 	upstreamReq.Header.Set("Authorization", "Bearer "+cfg.apiKey)
+	applyOpenAIImageSidecarTraceHeaders(upstreamReq)
 	if strings.TrimSpace(forwardContentType) != "" {
 		upstreamReq.Header.Set("Content-Type", forwardContentType)
 	}
@@ -343,7 +353,7 @@ func (s *OpenAIGatewayService) forwardOpenAIResponsesImageSidecar(
 	} else {
 		c.Data(http.StatusOK, "application/json; charset=utf-8", responseBody)
 	}
-	return &OpenAIForwardResult{
+	result := &OpenAIForwardResult{
 		RequestID:       resp.Header.Get("x-request-id"),
 		ResponseID:      responseID,
 		Usage:           OpenAIUsage{},
@@ -355,7 +365,34 @@ func (s *OpenAIGatewayService) forwardOpenAIResponsesImageSidecar(
 		Duration:        time.Since(startTime),
 		ImageCount:      len(results),
 		ImageSize:       imageSizeTier,
-	}, nil
+	}
+	logOpenAIImageSidecarForwardSuccess(result, parsed.Endpoint, true)
+	return result, nil
+}
+
+func applyOpenAIImageSidecarTraceHeaders(req *http.Request) {
+	if req == nil {
+		return
+	}
+	req.Header.Set("X-Caller", openAIImageSidecarCaller)
+	req.Header.Set("X-Request-Source", openAIImageSidecarSource)
+}
+
+func logOpenAIImageSidecarForwardSuccess(result *OpenAIForwardResult, endpoint string, responsesWrapped bool) {
+	if result == nil || result.ImageCount <= 0 {
+		return
+	}
+	logger.L().With(
+		zap.String("component", "service.openai_gateway"),
+		zap.String("request_id", result.RequestID),
+		zap.String("response_id", result.ResponseID),
+		zap.String("billing_model", result.BillingModel),
+		zap.String("model", result.Model),
+		zap.Int("image_count", result.ImageCount),
+		zap.String("image_size", result.ImageSize),
+		zap.String("endpoint", normalizeImageGenerationEndpoint(endpoint)),
+		zap.Bool("responses_wrapped", responsesWrapped),
+	).Info("openai.image_sidecar_forward_success")
 }
 
 func buildOpenAIImagesRequestFromResponsesBody(reqBody map[string]any, sidecarModel string) (*OpenAIImagesRequest, error) {

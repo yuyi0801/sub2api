@@ -598,6 +598,8 @@ func TestOpenAIGatewayServiceForwardImages_OAuthUsesImageSidecarWhenEnabled(t *t
 	require.NotNil(t, upstream.lastReq)
 	require.Equal(t, "http://chatgpt2api-image:80/v1/images/generations", upstream.lastReq.URL.String())
 	require.Equal(t, "Bearer sidecar-key", upstream.lastReq.Header.Get("Authorization"))
+	require.Equal(t, "sub2api", upstream.lastReq.Header.Get("X-Caller"))
+	require.Equal(t, "openai-image-sidecar", upstream.lastReq.Header.Get("X-Request-Source"))
 	require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.lastBody, "model").String())
 	require.Equal(t, "draw a cat", gjson.GetBytes(upstream.lastBody, "prompt").String())
 	require.Equal(t, "b64_json", gjson.GetBytes(upstream.lastBody, "response_format").String())
