@@ -11,14 +11,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+	"go.uber.org/zap"
 )
 
-const defaultOpenAIImageSidecarModel = "gpt-image-2"
+const (
+	defaultOpenAIImageSidecarModel = "gpt-image-2"
+	openAIImageSidecarCaller      = "sub2api"
+	openAIImageSidecarSource      = "openai-image-sidecar"
+	openAIImageSidecarAccountID   = int64(0)
+	openAIImageSidecarAccountName = "openai-image-sidecar"
+)
 
 type openAIImageSidecarConfig struct {
 	baseURL string
@@ -59,8 +67,145 @@ func (s *OpenAIGatewayService) openAIImageSidecarConfig() (openAIImageSidecarCon
 	}, true, nil
 }
 
+// IsOpenAIImageSidecarConfigured reports whether the sidecar feature flag is on.
+// It intentionally ignores config validity so callers can bypass account
+// scheduling and surface sidecar config errors instead of "no available accounts".
+func (s *OpenAIGatewayService) IsOpenAIImageSidecarConfigured() bool {
+	return s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIImageSidecar.Enabled
+}
+
+// OpenAIImageSidecarUsageAccount returns the virtual account used only for
+// usage_logs foreign-key compatibility. It must never be scheduled upstream.
+func OpenAIImageSidecarUsageAccount() *Account {
+	return &Account{
+		ID:          openAIImageSidecarAccountID,
+		Name:        openAIImageSidecarAccountName,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeUpstream,
+		Credentials: map[string]any{},
+		Extra:       map[string]any{"virtual": true, "purpose": "openai_image_sidecar_usage"},
+		Concurrency: 0,
+		Priority:    100,
+		Status:      StatusDisabled,
+		Schedulable: false,
+	}
+}
+
+// IsOpenAIImageSidecarUsageAccount identifies the virtual sidecar usage account.
+func IsOpenAIImageSidecarUsageAccount(account *Account) bool {
+	return account != nil &&
+		account.ID == openAIImageSidecarAccountID &&
+		account.Platform == PlatformOpenAI &&
+		account.Type == AccountTypeUpstream &&
+		strings.TrimSpace(account.Name) == openAIImageSidecarAccountName
+}
+
+func OpenAIImageSidecarUpstreamEndpoint(endpoint string) string {
+	normalized := normalizeImageGenerationEndpoint(endpoint)
+	if normalized == "" {
+		normalized = openAIImagesGenerationsEndpoint
+	}
+	return openAIImageSidecarSource + ":" + normalized
+}
+
+func OpenAIResponsesImageSidecarEndpointFromBody(body []byte) string {
+	reqBody := cloneRequestMapForImageIntent(body)
+	parsed, err := buildOpenAIImagesRequestFromResponsesBody(reqBody, defaultOpenAIImageSidecarModel)
+	if err != nil || parsed == nil || strings.TrimSpace(parsed.Endpoint) == "" {
+		return openAIImagesGenerationsEndpoint
+	}
+	return parsed.Endpoint
+}
+
+func IsCodexSparkModel(model string) bool {
+	return isCodexSparkModel(model)
+}
+
 func (cfg openAIImageSidecarConfig) endpointURL(endpoint string) string {
 	return buildOpenAIImagesURL(cfg.baseURL, endpoint)
+}
+
+func (s *OpenAIGatewayService) ForwardImagesSidecar(
+	ctx context.Context,
+	c *gin.Context,
+	parsed *OpenAIImagesRequest,
+	channelMappedModel string,
+) (*OpenAIForwardResult, error) {
+	sidecarCfg, enabled, cfgErr := s.openAIImageSidecarConfig()
+	if !enabled {
+		err := fmt.Errorf("openai image sidecar is not enabled")
+		s.writeOpenAIImageSidecarError(c, http.StatusBadGateway, "config", err.Error(), "")
+		if c != nil && c.Writer != nil && !c.Writer.Written() {
+			c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"type": "upstream_error", "message": err.Error()}})
+		}
+		return nil, err
+	}
+	if cfgErr != nil {
+		s.writeOpenAIImageSidecarError(c, http.StatusBadGateway, "config", cfgErr.Error(), "")
+		if c != nil && c.Writer != nil && !c.Writer.Written() {
+			c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"type": "upstream_error", "message": cfgErr.Error()}})
+		}
+		return nil, cfgErr
+	}
+	return s.forwardOpenAIImagesOAuthSidecar(ctx, c, parsed, channelMappedModel, sidecarCfg)
+}
+
+func (s *OpenAIGatewayService) ForwardResponsesImageSidecar(
+	ctx context.Context,
+	c *gin.Context,
+	body []byte,
+	originalModel string,
+	upstreamModel string,
+	stream bool,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
+	sidecarCfg, enabled, cfgErr := s.openAIImageSidecarConfig()
+	if !enabled {
+		err := fmt.Errorf("openai image sidecar is not enabled")
+		s.writeOpenAIImageSidecarError(c, http.StatusBadGateway, "config", err.Error(), "")
+		if c != nil && c.Writer != nil && !c.Writer.Written() {
+			c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"type": "upstream_error", "message": err.Error()}})
+		}
+		return nil, err
+	}
+	if cfgErr != nil {
+		s.writeOpenAIImageSidecarError(c, http.StatusBadGateway, "config", cfgErr.Error(), "")
+		if c != nil && c.Writer != nil && !c.Writer.Written() {
+			c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"type": "upstream_error", "message": cfgErr.Error()}})
+		}
+		return nil, cfgErr
+	}
+	reqBody, err := getOpenAIRequestBodyMap(c, body)
+	if err != nil {
+		return nil, err
+	}
+	if normalized := strings.TrimSpace(originalModel); normalized != "" {
+		reqBody["model"] = normalized
+	}
+	if v, ok := reqBody["model"].(string); ok && strings.TrimSpace(v) != "" {
+		originalModel = strings.TrimSpace(v)
+	}
+	if v, ok := reqBody["stream"].(bool); ok {
+		stream = v
+	}
+	if strings.TrimSpace(upstreamModel) == "" {
+		upstreamModel = originalModel
+	}
+	_, imageSizeTier, imageCfgErr := resolveOpenAIResponsesImageBillingConfig(reqBody, sidecarCfg.model)
+	if imageCfgErr != nil {
+		setOpsUpstreamError(c, http.StatusBadRequest, imageCfgErr.Error(), "")
+		if c != nil && c.Writer != nil && !c.Writer.Written() {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": gin.H{
+					"type":    "invalid_request_error",
+					"message": imageCfgErr.Error(),
+					"param":   "size",
+				},
+			})
+		}
+		return nil, imageCfgErr
+	}
+	return s.forwardOpenAIResponsesImageSidecar(ctx, c, reqBody, originalModel, upstreamModel, imageSizeTier, stream, sidecarCfg, startTime)
 }
 
 func (s *OpenAIGatewayService) forwardOpenAIImagesOAuthSidecar(
@@ -101,6 +246,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuthSidecar(
 		return nil, err
 	}
 	upstreamReq.Header.Set("Authorization", "Bearer "+cfg.apiKey)
+	applyOpenAIImageSidecarTraceHeaders(upstreamReq)
 	if strings.TrimSpace(forwardContentType) != "" {
 		upstreamReq.Header.Set("Content-Type", forwardContentType)
 	}
@@ -162,7 +308,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuthSidecar(
 	if imageCount <= 0 {
 		imageCount = parsed.N
 	}
-	return &OpenAIForwardResult{
+	result := &OpenAIForwardResult{
 		RequestID:       resp.Header.Get("x-request-id"),
 		Usage:           usage,
 		Model:           requestModel,
@@ -174,7 +320,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuthSidecar(
 		FirstTokenMs:    firstTokenMs,
 		ImageCount:      imageCount,
 		ImageSize:       parsed.SizeTier,
-	}, nil
+	}
+	logOpenAIImageSidecarForwardSuccess(result, parsed.Endpoint, false)
+	return result, nil
 }
 
 func buildOpenAIImagesSidecarBody(parsed *OpenAIImagesRequest, sidecarModel string) ([]byte, string, error) {
@@ -297,6 +445,7 @@ func (s *OpenAIGatewayService) forwardOpenAIResponsesImageSidecar(
 		return nil, err
 	}
 	upstreamReq.Header.Set("Authorization", "Bearer "+cfg.apiKey)
+	applyOpenAIImageSidecarTraceHeaders(upstreamReq)
 	if strings.TrimSpace(forwardContentType) != "" {
 		upstreamReq.Header.Set("Content-Type", forwardContentType)
 	}
@@ -343,7 +492,7 @@ func (s *OpenAIGatewayService) forwardOpenAIResponsesImageSidecar(
 	} else {
 		c.Data(http.StatusOK, "application/json; charset=utf-8", responseBody)
 	}
-	return &OpenAIForwardResult{
+	result := &OpenAIForwardResult{
 		RequestID:       resp.Header.Get("x-request-id"),
 		ResponseID:      responseID,
 		Usage:           OpenAIUsage{},
@@ -355,7 +504,34 @@ func (s *OpenAIGatewayService) forwardOpenAIResponsesImageSidecar(
 		Duration:        time.Since(startTime),
 		ImageCount:      len(results),
 		ImageSize:       imageSizeTier,
-	}, nil
+	}
+	logOpenAIImageSidecarForwardSuccess(result, parsed.Endpoint, true)
+	return result, nil
+}
+
+func applyOpenAIImageSidecarTraceHeaders(req *http.Request) {
+	if req == nil {
+		return
+	}
+	req.Header.Set("X-Caller", openAIImageSidecarCaller)
+	req.Header.Set("X-Request-Source", openAIImageSidecarSource)
+}
+
+func logOpenAIImageSidecarForwardSuccess(result *OpenAIForwardResult, endpoint string, responsesWrapped bool) {
+	if result == nil || result.ImageCount <= 0 {
+		return
+	}
+	logger.L().With(
+		zap.String("component", "service.openai_gateway"),
+		zap.String("request_id", result.RequestID),
+		zap.String("response_id", result.ResponseID),
+		zap.String("billing_model", result.BillingModel),
+		zap.String("model", result.Model),
+		zap.Int("image_count", result.ImageCount),
+		zap.String("image_size", result.ImageSize),
+		zap.String("endpoint", normalizeImageGenerationEndpoint(endpoint)),
+		zap.Bool("responses_wrapped", responsesWrapped),
+	).Info("openai.image_sidecar_forward_success")
 }
 
 func buildOpenAIImagesRequestFromResponsesBody(reqBody map[string]any, sidecarModel string) (*OpenAIImagesRequest, error) {

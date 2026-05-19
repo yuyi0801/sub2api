@@ -133,6 +133,47 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		return
 	}
 
+	if h.gatewayService.IsOpenAIImageSidecarConfigured() {
+		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
+		forwardStart := time.Now()
+		result, err := h.gatewayService.ForwardImagesSidecar(c.Request.Context(), c, parsed, channelMapping.MappedModel)
+		forwardDurationMs := time.Since(forwardStart).Milliseconds()
+		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
+		responseLatencyMs := forwardDurationMs
+		if upstreamLatencyMs > 0 && forwardDurationMs > upstreamLatencyMs {
+			responseLatencyMs = forwardDurationMs - upstreamLatencyMs
+		}
+		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
+		if result != nil && result.FirstTokenMs != nil {
+			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
+		}
+		if err != nil {
+			wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
+			fields := []zap.Field{
+				zap.Bool("fallback_error_response_written", wroteFallback),
+				zap.Error(err),
+			}
+			if shouldLogOpenAIForwardFailureAsWarn(c, wroteFallback) {
+				reqLog.Warn("openai.images.sidecar_direct_forward_failed", fields...)
+				return
+			}
+			reqLog.Error("openai.images.sidecar_direct_forward_failed", fields...)
+			return
+		}
+		sidecarAccount := service.OpenAIImageSidecarUsageAccount()
+		logOpenAIImageSidecarBillingVisible(reqLog, sidecarAccount.ID, result, GetInboundEndpoint(c), service.OpenAIImageSidecarUpstreamEndpoint(parsed.Endpoint))
+		reqLog.Info("openai.images.sidecar_direct_forward_success",
+			zap.String("request_id", result.RequestID),
+			zap.Int64("account_id", sidecarAccount.ID),
+			zap.String("billing_model", result.BillingModel),
+			zap.Int("image_count", result.ImageCount),
+			zap.String("endpoint", parsed.Endpoint),
+		)
+		h.recordOpenAIImageSidecarUsage(c, reqLog, subject, apiKey, subscription, channelMapping, result, parsed.Model, body, parsed.Multipart, parsed.StickySessionSeed(), parsed.Endpoint)
+		reqLog.Debug("openai.images.sidecar_direct_request_completed")
+		return
+	}
+
 	sessionHash := h.gatewayService.GenerateExplicitSessionHash(c, body)
 
 	maxAccountSwitches := h.maxAccountSwitches
@@ -272,6 +313,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
+			logOpenAIImageSidecarBillingVisible(reqLog, account.ID, result, GetInboundEndpoint(c), GetUpstreamEndpoint(c, account.Platform))
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
 		}
@@ -325,4 +367,64 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 
 func isMultipartImagesContentType(contentType string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "multipart/form-data")
+}
+
+func (h *OpenAIGatewayHandler) recordOpenAIImageSidecarUsage(
+	c *gin.Context,
+	reqLog *zap.Logger,
+	subject middleware2.AuthSubject,
+	apiKey *service.APIKey,
+	subscription *service.UserSubscription,
+	channelMapping service.ChannelMappingResult,
+	result *service.OpenAIForwardResult,
+	requestedModel string,
+	body []byte,
+	multipart bool,
+	stickySessionSeed string,
+	sidecarEndpoint string,
+) {
+	if h == nil || result == nil || apiKey == nil {
+		return
+	}
+	userAgent := c.GetHeader("User-Agent")
+	clientIP := ip.GetClientIP(c)
+	requestPayloadHash := service.HashUsageRequestPayload(body)
+	if multipart {
+		requestPayloadHash = service.HashUsageRequestPayload([]byte(stickySessionSeed))
+	}
+	inboundEndpoint := GetInboundEndpoint(c)
+	upstreamEndpoint := service.OpenAIImageSidecarUpstreamEndpoint(sidecarEndpoint)
+	sidecarAccount := service.OpenAIImageSidecarUsageAccount()
+	upstreamModel := result.UpstreamModel
+	h.submitMandatoryUsageRecordTask(func(ctx context.Context) {
+		if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
+			Result:             result,
+			APIKey:             apiKey,
+			User:               apiKey.User,
+			Account:            sidecarAccount,
+			Subscription:       subscription,
+			InboundEndpoint:    inboundEndpoint,
+			UpstreamEndpoint:   upstreamEndpoint,
+			UserAgent:          userAgent,
+			IPAddress:          clientIP,
+			RequestPayloadHash: requestPayloadHash,
+			APIKeyService:      h.apiKeyService,
+			ChannelUsageFields: channelMapping.ToUsageFields(requestedModel, upstreamModel),
+		}); err != nil {
+			fields := []zap.Field{
+				zap.String("component", "handler.openai_gateway.images"),
+				zap.Int64("user_id", subject.UserID),
+				zap.Int64("api_key_id", apiKey.ID),
+				zap.Any("group_id", apiKey.GroupID),
+				zap.String("model", requestedModel),
+				zap.String("upstream_endpoint", upstreamEndpoint),
+				zap.Int64("account_id", sidecarAccount.ID),
+			}
+			if reqLog != nil {
+				reqLog.With(fields...).Error("openai.images.sidecar_record_usage_failed", zap.Error(err))
+			} else {
+				logger.L().With(fields...).Error("openai.images.sidecar_record_usage_failed", zap.Error(err))
+			}
+		}
+	})
 }

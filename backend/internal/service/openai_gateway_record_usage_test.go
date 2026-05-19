@@ -376,6 +376,69 @@ func TestOpenAIGatewayServiceRecordUsage_IncludesEndpointMetadata(t *testing.T) 
 	require.Equal(t, "/v1/responses", *usageRepo.lastLog.UpstreamEndpoint)
 }
 
+func TestOpenAIGatewayServiceRecordUsage_SidecarImageUsesVirtualAccountAndImageBilling(t *testing.T) {
+	groupID := int64(42)
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	quotaSvc := &openAIRecordUsageAPIKeyQuotaStub{}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, userRepo, subRepo, nil)
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID:    "req_sidecar_usage",
+			Model:        "gpt-image-2",
+			BillingModel: "gpt-image-2",
+			ImageCount:   1,
+			ImageSize:    "1K",
+			Duration:     time.Second,
+		},
+		APIKey: &APIKey{
+			ID:      1003,
+			Quota:   100,
+			GroupID: &groupID,
+			Group: &Group{
+				ID:                  groupID,
+				RateMultiplier:      1,
+				ImageRateMultiplier: 1,
+			},
+		},
+		User:               &User{ID: 2003},
+		Account:            OpenAIImageSidecarUsageAccount(),
+		InboundEndpoint:    "/v1/images/generations",
+		UpstreamEndpoint:   OpenAIImageSidecarUpstreamEndpoint("/v1/images/generations"),
+		RequestPayloadHash: "payload-hash",
+		APIKeyService:      quotaSvc,
+		ChannelUsageFields: ChannelUsageFields{
+			OriginalModel:      "gpt-image-2",
+			ChannelMappedModel: "gpt-image-2",
+			BillingModelSource: BillingModelSourceRequested,
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, billingRepo.calls)
+	require.Equal(t, 1, usageRepo.calls)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, int64(0), usageRepo.lastLog.AccountID)
+	require.Equal(t, "gpt-image-2", usageRepo.lastLog.Model)
+	require.Equal(t, 1, usageRepo.lastLog.ImageCount)
+	require.NotNil(t, usageRepo.lastLog.ImageSize)
+	require.Equal(t, "1K", *usageRepo.lastLog.ImageSize)
+	require.NotNil(t, usageRepo.lastLog.BillingMode)
+	require.Equal(t, string(BillingModeImage), *usageRepo.lastLog.BillingMode)
+	require.NotNil(t, usageRepo.lastLog.UpstreamEndpoint)
+	require.Equal(t, "openai-image-sidecar:/v1/images/generations", *usageRepo.lastLog.UpstreamEndpoint)
+	require.NotNil(t, billingRepo.lastCmd)
+	require.Equal(t, int64(0), billingRepo.lastCmd.AccountID)
+	require.Equal(t, AccountTypeUpstream, billingRepo.lastCmd.AccountType)
+	require.Equal(t, 1, billingRepo.lastCmd.ImageCount)
+	require.Zero(t, billingRepo.lastCmd.AccountQuotaCost)
+	require.Greater(t, billingRepo.lastCmd.BalanceCost, 0.0)
+	require.Equal(t, 1, quotaSvc.quotaCalls)
+}
+
 func TestOpenAIGatewayServiceRecordUsage_FallsBackToGroupDefaultRateOnResolverError(t *testing.T) {
 	groupID := int64(12)
 	groupRate := 1.6

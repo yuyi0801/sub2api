@@ -56,6 +56,51 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_JSON(t *testing.T) {
 	require.False(t, parsed.Multipart)
 }
 
+func TestOpenAIGatewayServiceForwardImagesSidecar_DirectGeneration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","size":"1024x1024"}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"req_image_direct"}},
+		Body:       io.NopCloser(strings.NewReader(`{"created":1710000000,"data":[{"b64_json":"Y2F0"}]}`)),
+	}}
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{Gateway: config.GatewayConfig{OpenAIImageSidecar: config.OpenAIImageSidecarConfig{
+			Enabled: true,
+			BaseURL: "http://chatgpt2api-image:80",
+			APIKey:  "sidecar-key",
+			Model:   "gpt-image-2",
+		}}},
+		httpUpstream: upstream,
+	}
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+	require.NoError(t, err)
+
+	result, err := svc.ForwardImagesSidecar(context.Background(), c, parsed, "")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "http://chatgpt2api-image:80/v1/images/generations", upstream.lastReq.URL.String())
+	require.Equal(t, "Bearer sidecar-key", upstream.lastReq.Header.Get("Authorization"))
+	require.Equal(t, "sub2api", upstream.lastReq.Header.Get("X-Caller"))
+	require.Equal(t, "openai-image-sidecar", upstream.lastReq.Header.Get("X-Request-Source"))
+	require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, "draw a cat", gjson.GetBytes(upstream.lastBody, "prompt").String())
+	require.Equal(t, "b64_json", gjson.GetBytes(upstream.lastBody, "response_format").String())
+	require.Equal(t, "gpt-image-2", result.BillingModel)
+	require.Equal(t, 1, result.ImageCount)
+	require.Equal(t, "1K", result.ImageSize)
+	require.Equal(t, "Y2F0", gjson.Get(rec.Body.String(), "data.0.b64_json").String())
+}
+
 func TestOpenAIGatewayServiceParseOpenAIImagesRequest_MultipartEdit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -598,6 +643,8 @@ func TestOpenAIGatewayServiceForwardImages_OAuthUsesImageSidecarWhenEnabled(t *t
 	require.NotNil(t, upstream.lastReq)
 	require.Equal(t, "http://chatgpt2api-image:80/v1/images/generations", upstream.lastReq.URL.String())
 	require.Equal(t, "Bearer sidecar-key", upstream.lastReq.Header.Get("Authorization"))
+	require.Equal(t, "sub2api", upstream.lastReq.Header.Get("X-Caller"))
+	require.Equal(t, "openai-image-sidecar", upstream.lastReq.Header.Get("X-Request-Source"))
 	require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.lastBody, "model").String())
 	require.Equal(t, "draw a cat", gjson.GetBytes(upstream.lastBody, "prompt").String())
 	require.Equal(t, "b64_json", gjson.GetBytes(upstream.lastBody, "response_format").String())
