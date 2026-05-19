@@ -22,9 +22,9 @@ import (
 
 const (
 	defaultOpenAIImageSidecarModel = "gpt-image-2"
-	openAIImageSidecarCaller      = "sub2api"
-	openAIImageSidecarSource      = "openai-image-sidecar"
-	openAIImageSidecarAccountID   = int64(0)
+	openAIImageSidecarCaller       = "sub2api"
+	openAIImageSidecarSource       = "openai-image-sidecar"
+	openAIImageSidecarAccountID    = int64(0)
 	openAIImageSidecarAccountName = "openai-image-sidecar"
 )
 
