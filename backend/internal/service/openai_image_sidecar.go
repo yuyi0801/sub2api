@@ -25,7 +25,7 @@ const (
 	openAIImageSidecarCaller       = "sub2api"
 	openAIImageSidecarSource       = "openai-image-sidecar"
 	openAIImageSidecarAccountID    = int64(0)
-	openAIImageSidecarAccountName = "openai-image-sidecar"
+	openAIImageSidecarAccountName  = "openai-image-sidecar"
 )
 
 type openAIImageSidecarConfig struct {

@@ -436,7 +436,8 @@ func TestOpenAIGatewayServiceRecordUsage_SidecarImageUsesVirtualAccountAndImageB
 	require.Equal(t, 1, billingRepo.lastCmd.ImageCount)
 	require.Zero(t, billingRepo.lastCmd.AccountQuotaCost)
 	require.Greater(t, billingRepo.lastCmd.BalanceCost, 0.0)
-	require.Equal(t, 1, quotaSvc.quotaCalls)
+	require.Greater(t, billingRepo.lastCmd.APIKeyQuotaCost, 0.0)
+	require.Equal(t, 0, quotaSvc.quotaCalls)
 }
 
 func TestOpenAIGatewayServiceRecordUsage_FallsBackToGroupDefaultRateOnResolverError(t *testing.T) {
